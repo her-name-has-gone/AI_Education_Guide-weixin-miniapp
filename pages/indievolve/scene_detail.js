@@ -1,6 +1,40 @@
 "use strict";
 const e = require("../../common/vendor.js");
 const LLMService = require("../../services/llm.js");
+
+// --- Helper: Markdown Parser ---
+function parseMarkdown(text) {
+    if (!text) return [];
+    const blocks = [];
+    const lines = text.split('\n');
+    let currentTitle = "";
+    let currentBody = "";
+
+    lines.forEach(line => {
+        line = line.trim();
+        // Check for Headers (H1, H2, H3)
+        if (line.startsWith('#') || line.match(/^\d+\./)) {
+            if (currentTitle || currentBody) {
+                blocks.push({
+                    title: currentTitle || "引言",
+                    content: currentBody.trim()
+                });
+            }
+            currentTitle = line.replace(/^[#\*\d\.\s]+/, '').trim();
+            currentBody = "";
+        } else {
+            currentBody += line + "\n";
+        }
+    });
+
+    if (currentTitle || currentBody) {
+        blocks.push({
+            title: currentTitle || "总结",
+            content: currentBody.trim()
+        });
+    }
+    return blocks;
+}
 const apiConfig = require("../../config/api.js");
 // WechatSI Plugin
 let plugin = null;
@@ -8,7 +42,7 @@ let manager = null;
 try {
     plugin = requirePlugin("WechatSI");
     manager = plugin.getRecordRecognitionManager();
-} catch(e) { console.error("WechatSI Plugin load failed", e); }
+} catch (e) { console.error("WechatSI Plugin load failed", e); }
 const t = {
     data: () => ({
         stage: "select_mode",
@@ -21,7 +55,7 @@ const t = {
         voiceStep: "idle",
         voiceStep: "idle",
         refineQuery: "",
-        
+
         // --- Stage Visibility Flags (Reactivity Base) ---
         QUICK_RESULT: false,
         RESULT_PAGE: false,
@@ -337,29 +371,29 @@ const t = {
         //     textbookContent: "",
         //     condition: "学生能预习+多媒体齐全"
         // },
-            pptData: {
-                subject: "",
-                content: "",
-                pages: "",
-                grade: "",
-                cover: "",
-                keyPoints: "",
-                interaction: "",
-                innovations: ["", "", ""],
-                presentationMode: "多媒体为主+板书辅助",
-                style: "简洁大方"
-            },
-            lessonPlanData: {
-                subject: "",
-                gradeClass: "",
-                duration: "",
-                designKeyPoints: "",
-                lessonType: "新授课",
-                format: "表格式",
-                blackboard: "板书设计",
-                homework: "作业布置",
-                style: "规范严谨"
-            },
+        pptData: {
+            subject: "",
+            content: "",
+            pages: "",
+            grade: "",
+            cover: "",
+            keyPoints: "",
+            interaction: "",
+            innovations: ["", "", ""],
+            presentationMode: "多媒体为主+板书辅助",
+            style: "简洁大方"
+        },
+        lessonPlanData: {
+            subject: "",
+            gradeClass: "",
+            duration: "",
+            designKeyPoints: "",
+            lessonType: "新授课",
+            format: "表格式",
+            blackboard: "板书设计",
+            homework: "作业布置",
+            style: "规范严谨"
+        },
         reportData: {
             theme: '',
             timeRange: '',
@@ -468,6 +502,42 @@ const t = {
     },
 
     methods: {
+        parseMarkdownToBlocks(text) {
+            if (!text) return [];
+            const blocks = [];
+            const lines = text.split('\n');
+            let currentTitle = "";
+            let currentBody = "";
+
+            lines.forEach(line => {
+                line = line.trim();
+                // Check for Headers (H1, H2, H3)
+                if (line.startsWith('#') || line.match(/^\d+\./)) {
+                    // Push previous block if exists
+                    if (currentTitle || currentBody) {
+                        blocks.push({
+                            title: currentTitle || "引言",
+                            content: currentBody.trim()
+                        });
+                    }
+                    // Clean title (remove #, *, digits)
+                    currentTitle = line.replace(/^[#\*\d\.\s]+/, '').trim();
+                    currentBody = "";
+                } else {
+                    currentBody += line + "\n";
+                }
+            });
+
+            // Push last block
+            if (currentTitle || currentBody) {
+                blocks.push({
+                    title: currentTitle || "总结",
+                    content: currentBody.trim()
+                });
+            }
+            return blocks;
+        },
+
         // --- Personalized Comments Stage Switchers ---
         handleQuickMode() {
             this.setStage('quick_input');
@@ -489,24 +559,24 @@ const t = {
                 wx.showToast({ title: "请填写姓名和表现", icon: "none" });
                 return;
             }
-            
+
             this.isGeneratingSingle = true;
             try {
                 const prompt = `R: Teacher. T: Write a short comment.
 Student: ${this.singleName}. Performance: ${this.singlePerf}.
 Output: A warm, encouraging comment (about 50 words). Language: Simplified Chinese.`;
-                
+
                 const result = await LLMService.callGemini(prompt);
                 this.singleResult = result;
                 this.isGeneratingSingle = false;
-                
+
                 // Cache data
                 wx.setStorageSync('fast_mode_data', {
                     name: this.singleName,
                     perf: this.singlePerf,
                     result: result
                 });
-                
+
                 this.setStage('quick_result');
             } catch (e) {
                 console.error(e);
@@ -522,29 +592,84 @@ Output: A warm, encouraging comment (about 50 words). Language: Simplified Chine
             this.setStage('quick_input');
         },
         copyAndFinish() {
-             wx.setClipboardData({
-                 data: this.singleResult,
-                 success: () => {
-                     wx.showToast({ title: '已复制', icon: 'success' });
-                     // Optional: return to main menu or stay
-                     // this.initStage(); 
-                 }
-             });
+            wx.setClipboardData({
+                data: this.singleResult,
+                success: () => {
+                    wx.showToast({ title: '已复制', icon: 'success' });
+                    // Optional: return to main menu or stay
+                    // this.initStage(); 
+                }
+            });
+        },
+
+
+        async handlePsychGenerate() {
+            const data = this.psychData;
+            if (!data.studentInfo || !data.manifestation) {
+                wx.showToast({ title: "请完善学生信息", icon: "none" });
+                return;
+            }
+
+            this.setStage("loading_page");
+            try {
+                const prompt = `Role: School Psychologist. Task: Create a counseling plan.
+Student: ${data.studentInfo}. Problem: ${data.problemType}.
+Details: ${data.manifestation}. Duration: ${data.duration}.
+Risk Level: ${data.riskLevel}. 
+Trigger: ${data.trigger}. Intensity: ${data.intensity}.
+Personality: ${data.personality}. Support: ${data.support}. Tried: ${data.tried}.
+
+Output: Markdown format.
+1. Problem Analysis (Deep dive)
+2. Immediate Intervention (What to say/do)
+3. Long-term Strategy (Plan)
+4. Home-School Cooperation
+Tone: Professional, empathetic, practical. Language: Simplified Chinese.`;
+
+                // --- DEBUG: MOCK API RESPONSE START ---
+                // const result = await Promise.race([
+                //     LLMService.callClaude(prompt),
+                //     new Promise((_, reject) => setTimeout(() => reject(new Error("请求超时，请检查网络")), 30000))
+                // ]);
+
+                await new Promise(r => setTimeout(r, 2000)); // Simulate wait
+                const result = "# 心理疏导方案 (测试)\n\n## 1. 问题分析\n这是测试数据。如果看到这个，说明界面逻辑完全正常，问题出在网络连接或API配置上。\n\n## 2. 建议\n请检查 config/api.js 中的服务器地址。";
+                // --- DEBUG: MOCK API RESPONSE END ---
+
+                this.resultData = {
+                    title: "心理疏导方案",
+                    // Use local helper instead of this.method
+                    contentBlocks: parseMarkdown(result)
+                };
+                this.currResult = result; // For copy/export
+                this.setStage("result_page");
+            } catch (e) {
+                console.error("Generate Error:", e);
+                // Force error visibility
+                wx.showModal({
+                    title: '发生错误',
+                    content: '详细错误: ' + (e.message || JSON.stringify(e)),
+                    showCancel: false,
+                    success: () => {
+                        this.setStage("psych_input");
+                    }
+                });
+            }
         },
 
         // --- Batch Mode Handlers ---
         handleManualBatch() {
-             this.isManualBatch = true;
-             if (!this.ocrData || this.ocrData.length === 0) {
-                 this.ocrData = [{ name: "", text: "" }];
-             }
-             this.setStage('batch_ocr_result');
+            this.isManualBatch = true;
+            if (!this.ocrData || this.ocrData.length === 0) {
+                this.ocrData = [{ name: "", text: "" }];
+            }
+            this.setStage('batch_ocr_result');
         },
 
         handleCamera() {
             const that = this;
             wx.chooseMedia({
-                count: 9, 
+                count: 9,
                 mediaType: ['image'],
                 sourceType: ['camera'],
                 success(res) {
@@ -581,54 +706,54 @@ Output: A warm, encouraging comment (about 50 words). Language: Simplified Chine
         },
         // Helper for batch file parsing (mock logic for now or reuse uploadAndParseFile logic iteratively)
         uploadAndParseBatchFiles(files) {
-             const that = this;
-             // Here we would loop and upload. For now, simulate success for UX.
-             files.forEach(file => {
-                 that.ocrData.push({
-                     name: file.name,
-                     text: "[文件已上传: " + file.name + "]",
-                     attachedFile: file.path
-                 });
-             });
-             that.setData({
-                 ocrData: that.ocrData,
-                 ocrRes: true,
-                 stage: "batch_ocr_result"
-             });
+            const that = this;
+            // Here we would loop and upload. For now, simulate success for UX.
+            files.forEach(file => {
+                that.ocrData.push({
+                    name: file.name,
+                    text: "[文件已上传: " + file.name + "]",
+                    attachedFile: file.path
+                });
+            });
+            that.setData({
+                ocrData: that.ocrData,
+                ocrRes: true,
+                stage: "batch_ocr_result"
+            });
         },
         handleCapture() {
-             this.handleCamera(); // reuse camera logic for camera_guide stage
+            this.handleCamera(); // reuse camera logic for camera_guide stage
         },
-    handleVoiceBatch() {
-        this.isBatchVoiceEntry = true;
-            this.stage = "batch_voice_input"; 
+        handleVoiceBatch() {
+            this.isBatchVoiceEntry = true;
+            this.stage = "batch_voice_input";
             this.voiceStep = "idle";
             wx.setNavigationBarTitle({ title: "语音批量录入" });
-            this.initRecord(); 
+            this.initRecord();
         },
         initRecord() {
             if (!manager) return;
             manager.onRecognize = (res) => {
-               // Optional: Show partial result
+                // Optional: Show partial result
             };
             manager.onStop = (res) => {
                 const text = res.result;
                 if (text && text.length > 0) {
-                     if (this.stage === 'quick_input') {
-                         // Append to singlePerf for Quick Mode
-                         this.singlePerf = (this.singlePerf || "") + text;
-                         this.setData({ singlePerf: this.singlePerf });
-                     } else {
-                         // Default Batch Behavior
-                         this.ocrData.push({ name: "语音录入", text: text });
-                         this.setData({ ocrData: this.ocrData });
-                     }
-                     
-                     this.setData({
-                         voiceStep: 'done',
-                         currentVoiceResult: text // Store for display
-                     });
-                     wx.showToast({ title: "识别成功", icon: "success" });
+                    if (this.stage === 'quick_input') {
+                        // Append to singlePerf for Quick Mode
+                        this.singlePerf = (this.singlePerf || "") + text;
+                        this.setData({ singlePerf: this.singlePerf });
+                    } else {
+                        // Default Batch Behavior
+                        this.ocrData.push({ name: "语音录入", text: text });
+                        this.setData({ ocrData: this.ocrData });
+                    }
+
+                    this.setData({
+                        voiceStep: 'done',
+                        currentVoiceResult: text // Store for display
+                    });
+                    wx.showToast({ title: "识别成功", icon: "success" });
                 } else {
                     this.setData({ voiceStep: 'idle' });
                     wx.showToast({ title: "未识别到内容", icon: "none" });
@@ -668,8 +793,8 @@ Output: A warm, encouraging comment (about 50 words). Language: Simplified Chine
                                 const fs = wx.getFileSystemManager();
                                 const base64 = fs.readFileSync(tempFilePath, 'base64');
                                 that[dataKey].attachedImage = base64;
-                                that[dataKey].attachedText = null; 
-                                that[dataKey].content = '[已添加图片]'; 
+                                that[dataKey].attachedText = null;
+                                that[dataKey].content = '[已添加图片]';
                                 that[dataKey].uploadedFile = { type: 'image', path: tempFilePath };
                                 wx.showToast({ title: '图片已添加', icon: 'success' });
                             }
@@ -707,8 +832,8 @@ Output: A warm, encouraging comment (about 50 words). Language: Simplified Chine
                             wx.showToast({ title: '解析失败: ' + (data.error || '未知'), icon: 'none' });
                         }
                     } catch (e) {
-                         console.error("Parse Error", e);
-                         wx.showToast({ title: '服务器响应错误', icon: 'none' });
+                        console.error("Parse Error", e);
+                        wx.showToast({ title: '服务器响应错误', icon: 'none' });
                     }
                 },
                 fail(err) {
@@ -780,12 +905,12 @@ Confusion Point: ${d.confusion || 'General'}
 Requirements: Explain the concept clearly, Identify why the student is confused, Provide a correct example.
 Output: Markdown. 1. Diagnosis 2. Concept Clarification 3. Correct Walkthrough.
 Language: Simplified Chinese.`;
-                
+
                 const content = await LLMService.callClaude(prompt, undefined, imageBase64);
                 this.resultData = { title: "错题深度解析", contentBlocks: this.parseMarkdownToBlocks(content) };
                 this.stage = "result_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
                 this.completeTask(10);
-            } catch(e) { console.error(e); this.stage = "kp_input_test"; wx.showToast({ title: "生成失败", icon: "none" }); }
+            } catch (e) { console.error(e); this.stage = "kp_input_test"; wx.showToast({ title: "生成失败", icon: "none" }); }
         },
 
         ms_upload() { this.handleCommonUpload('msData'); },
@@ -810,12 +935,12 @@ Language: Simplified Chinese.`;
                 this.stage = "result_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
                 this.completeTask(10);
                 this.addToHistory("一题多解", content);
-            } catch(e) { this.stage = "ms_input_real"; wx.showToast({ title: "生成失败", icon: "none" }); }
+            } catch (e) { this.stage = "ms_input_real"; wx.showToast({ title: "生成失败", icon: "none" }); }
         },
 
         vr_upload() { this.handleCommonUpload('vrData'); },
         async handleVariationGenNew() {
-             const d = this.vrData;
+            const d = this.vrData;
             let finalContent = d.content;
             let imageBase64 = d.attachedImage;
             if (d.attachedText && (!d.content || d.content.startsWith('[已'))) finalContent = d.attachedText;
@@ -835,14 +960,14 @@ Language: Simplified Chinese.`;
                 this.stage = "result_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
                 this.completeTask(10);
                 this.addToHistory("变式生成", content);
-            } catch(e) { this.stage = "vr_input_real"; wx.showToast({ title: "生成失败", icon: "none" }); }
+            } catch (e) { this.stage = "vr_input_real"; wx.showToast({ title: "生成失败", icon: "none" }); }
         },
         // --- Research Paper Handlers ---
         rp_meth_upload() { this.handleCommonUpload('rpMethodData'); },
         async rp_meth_generate() {
             const d = this.rpMethodData;
             if (!d.problem) { wx.showToast({ title: "请输入研究问题", icon: "none" }); return; }
-            
+
             this.stage = "loading_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
             try {
                 const prompt = `R: Research Methodologist. T: Design Research Methods.
@@ -855,19 +980,19 @@ Language: Simplified Chinese.`;
                 this.stage = "result_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
                 this.completeTask(20);
                 this.addToHistory("研究方法: " + d.problem, content);
-            } catch(e) { this.stage = "rp_method_input"; wx.showToast({ title: "生成失败", icon: "none" }); }
+            } catch (e) { this.stage = "rp_method_input"; wx.showToast({ title: "生成失败", icon: "none" }); }
         },
 
         rp_data_upload() { this.handleCommonUpload('rpDataData'); },
         async rp_data_generate() {
-             const d = this.rpDataData;
+            const d = this.rpDataData;
             let finalContent = d.content;
             if (d.attachedText) finalContent = d.attachedText;
-            
+
             // Check if content is actually present (not just "Uploaded")
             if (!finalContent || finalContent.startsWith('[已')) {
-                 if(d.attachedText) finalContent = d.attachedText;
-                 else { wx.showToast({ title: "请上传数据文件", icon: "none" }); return; }
+                if (d.attachedText) finalContent = d.attachedText;
+                else { wx.showToast({ title: "请上传数据文件", icon: "none" }); return; }
             }
 
             this.stage = "loading_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
@@ -877,16 +1002,17 @@ Data Context: ${d.dataType}
 Data Content: ${finalContent.substring(0, 5000)}
 Output: Markdown. 1. Descriptive Stats 2. Key Findings 3. Educational Implications.
 Language: Simplified Chinese.`;
-                 const content = await LLMService.callClaude(prompt);
+                const content = await LLMService.callClaude(prompt);
                 this.resultData = { title: "数据分析结果", contentBlocks: this.parseMarkdownToBlocks(content) };
                 this.stage = "result_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
                 this.completeTask(20);
-            } catch(e) { console.error(e); this.stage = "rp_data_input"; wx.showToast({ title: "生成失败", icon: "none" }); }
+            } catch (e) { console.error(e); this.stage = "rp_data_input"; wx.showToast({ title: "生成失败", icon: "none" }); }
         },
 
 
         initStage() {
-            console.log('[DEBUG] initStage called, sceneId:', this.sceneId);
+            this.sceneId = String(this.sceneId || '').trim();
+            console.log('[DEBUG] initStage called, normalized sceneId:', this.sceneId);
             if ("1.2" === this.sceneId) {
                 console.log('[DEBUG] Matched sceneId 1.2, setting stage to web_guide');
                 this.setStage("web_guide");
@@ -948,7 +1074,18 @@ Language: Simplified Chinese.`;
 
                 // Add other critical flags if needed for other bugs, but focus on the blank page one first
                 // Wait, if I don't set them all, other pages might break if they rely on them?
-                // Yes, many pages rely on them. I must map them all.
+                // Data helpers needs to be updated when data changes, but typically they are just renamed in WXML
+                // For 'res_title' and 'res_blocks', WXML likely uses them directly.
+                // I should update them in setData if they are used in WXML.
+                res_title: this.resultData ? this.resultData.title : '',
+                res_content: this.resultData && this.resultData.contentBlocks ?
+                    this.resultData.contentBlocks.map(b => `### ${b.title}\n${b.content}`).join('\n\n')
+                    : '',
+
+                // --- CRITICAL VISIBILITY FLAGS ---
+                LOADING_PAGE: s === 'loading_page',
+                RESULT_PAGE: s === 'result_page',
+
                 ao: s === 'batch_input',
                 ocrRes: s === 'batch_ocr_result',
                 batchParams: s === 'batch_params',
@@ -975,7 +1112,7 @@ Language: Simplified Chinese.`;
                 PSYCH_INPUT: s === 'psych_input',
                 CONFLICT_INPUT: s === 'conflict_input',
                 isBatchVoice: s === 'batch_voice_input',
-                
+
                 // Data helpers needs to be updated when data changes, but typically they are just renamed in WXML
                 // For 'res_title' and 'res_blocks', WXML likely uses them directly.
                 // I should update them in setData if they are used in WXML.
@@ -1046,15 +1183,15 @@ Language: Simplified Chinese.`;
                 url: "/pages/indievolve/scene_detail?id=" + this.sceneId + "&targetStage=paper_assess_input"
             })
         },
-    async handleQuizGenerate() {
-        if (!this.quizData.subject || !this.quizData.grade || !this.quizData.topic) {
-            e.index.showToast({ title: "请补全核心信息", icon: "none" });
-            return;
-        }
+        async handleQuizGenerate() {
+            if (!this.quizData.subject || !this.quizData.grade || !this.quizData.topic) {
+                e.index.showToast({ title: "请补全核心信息", icon: "none" });
+                return;
+            }
 
-        e.index.showLoading({ title: "正在生成..." });
+            e.index.showLoading({ title: "正在生成..." });
 
-        const prompt = `
+            const prompt = `
 R (角色)：你是一位经验丰富的${this.quizData.subject}教师，擅长设计精准定制的课堂练习题。
 
 T (任务)：为我生成${this.quizData.grade}年级${this.quizData.topic}的课堂练习题${this.quizData.count}道。
@@ -1114,29 +1251,29 @@ F (输出格式)：
 - 时间参考：基础题约2分钟/道，巩固题约3分钟/道，拓展题约4分钟/道
 `;
 
-        try {
-            const result = await LLMService.callGemini(prompt);
-            this.resultData = {
-                title: `${this.quizData.grade}${this.quizData.subject}课堂练习`,
-                contentBlocks: [
-                    { type: 'p', text: result }
-                ]
-            };
-            e.index.hideLoading();
-            // Go to result page
-            this.stage = "result_page";
-            wx.pageScrollTo({ scrollTop: 0, duration: 0 });
-            
-        } catch (err) {
-            console.error(err);
-            e.index.hideLoading();
-            e.index.showModal({
-                title: "生成失败",
-                content: "错误信息: " + (err.message || JSON.stringify(err)),
-                showCancel: false
-            });
-        }
-    },
+            try {
+                const result = await LLMService.callGemini(prompt);
+                this.resultData = {
+                    title: `${this.quizData.grade}${this.quizData.subject}课堂练习`,
+                    contentBlocks: [
+                        { type: 'p', text: result }
+                    ]
+                };
+                e.index.hideLoading();
+                // Go to result page
+                this.stage = "result_page";
+                wx.pageScrollTo({ scrollTop: 0, duration: 0 });
+
+            } catch (err) {
+                console.error(err);
+                e.index.hideLoading();
+                e.index.showModal({
+                    title: "生成失败",
+                    content: "错误信息: " + (err.message || JSON.stringify(err)),
+                    showCancel: false
+                });
+            }
+        },
         handlePaperGenerate() {
             e.index.showLoading({
                 title: "正在评估..."
@@ -1154,7 +1291,7 @@ F (输出格式)：
                 success: (res) => {
                     const file = res.tempFiles[0];
                     this.paperData.content = `[已上传文件] ${file.name}`;
-                    this.paperData.uploadedFile = file; 
+                    this.paperData.uploadedFile = file;
                     e.index.showToast({ title: "上传成功", icon: "success" });
                 }
             })
@@ -1169,26 +1306,26 @@ F (输出格式)：
                 url: "/pages/indievolve/scene_detail?id=" + this.sceneId + "&targetStage=mistake_training_input"
             })
         },
-    // Mistake Training Handlers
-    mt_onSubject(e) { this.mistakeData.subject = e.detail.value; },
-    mt_onCount(e) { this.mistakeData.count = e.detail.value; },
-    mt_onGrade(e) { this.mistakeData.grade = e.detail.value; },
-    mt_onTotal(e) { this.mistakeData.totalCount = e.detail.value; },
-    mt_onError(e) { this.mistakeData.errorCount = e.detail.value; },
-    mt_onContent(e) { this.mistakeData.content = e.detail.value; },
-    mt_setType(e) { this.mistakeData.errorType = e.currentTarget.dataset.val; },
-    mt_onTypical(e) { this.mistakeData.typicalErrors = e.detail.value; },
-    mt_onGoal(e) { this.mistakeData.targetGoal = e.detail.value; },
-    mt_setScene(e) { this.mistakeData.scenario = e.currentTarget.dataset.val; },
+        // Mistake Training Handlers
+        mt_onSubject(e) { this.mistakeData.subject = e.detail.value; },
+        mt_onCount(e) { this.mistakeData.count = e.detail.value; },
+        mt_onGrade(e) { this.mistakeData.grade = e.detail.value; },
+        mt_onTotal(e) { this.mistakeData.totalCount = e.detail.value; },
+        mt_onError(e) { this.mistakeData.errorCount = e.detail.value; },
+        mt_onContent(e) { this.mistakeData.content = e.detail.value; },
+        mt_setType(e) { this.mistakeData.errorType = e.currentTarget.dataset.val; },
+        mt_onTypical(e) { this.mistakeData.typicalErrors = e.detail.value; },
+        mt_onGoal(e) { this.mistakeData.targetGoal = e.detail.value; },
+        mt_setScene(e) { this.mistakeData.scenario = e.currentTarget.dataset.val; },
 
-    async mt_generate() {
-         const data = this.mistakeData;
-         if (!data.content) {
-             e.index.showToast({ title: "请提供错题内容", icon: "none" });
-             return;
-         }
+        async mt_generate() {
+            const data = this.mistakeData;
+            if (!data.content) {
+                e.index.showToast({ title: "请提供错题内容", icon: "none" });
+                return;
+            }
 
-         const prompt = `
+            const prompt = `
 R (角色)：你是一位经验丰富的${data.subject || '学科'}教师，擅长诊断学生错误并设计精准的补救训练。
 
 T (任务)：请为这道错题设计${data.count || '3'}道强化训练题。
@@ -1263,79 +1400,79 @@ F (输出格式)：
 - 检验：能做对1-3题为及格，独立完成4-5题为优秀
 `;
 
-         e.index.showLoading({ title: "正在生成训练题..." });
-         
-         try {
-             // Use this.resultData to store result? Or just navigate?
-             // Looking at other handlers, we usually set resultData and go to result_page.
-             // But Wait, `e.index` usage in this file suggests `this` context might be tricky if not bound?
-             // Actually `handleQuizGenerate` uses `e.index` for showToast but `this.resultData` for data.
-             // The previous handler I wrote `handlePaperGenerate` used `this.stage`.
-             // In this file `e.index` seems to be a valid reference to the page instance or global helper?
-             // Checking line 398: `e.index.setNavigationBarTitle`.
-             // But `handlePaperGenerate` used `wx.showToast`.
-             // Let's stick to `LLMService` call and `this.resultData`.
-             
-             const result = await LLMService.callGemini(prompt);
-             
-             this.resultData = {
-                 title: "错题强化训练方案",
-                 contentBlocks: [
-                     { type: 'p', text: result }
-                 ]
-             };
-             
-             e.index.hideLoading();
-             this.stage = "result_page";
-             wx.pageScrollTo({ scrollTop: 0, duration: 0 });
+            e.index.showLoading({ title: "正在生成训练题..." });
 
-         } catch (err) {
-             console.error(err);
-             e.index.hideLoading();
-             e.index.showModal({
-                 title: "生成失败",
-                 content: err.message || "请稍后重试",
-                 showCancel: false
-             });
-         }
-    },
+            try {
+                // Use this.resultData to store result? Or just navigate?
+                // Looking at other handlers, we usually set resultData and go to result_page.
+                // But Wait, `e.index` usage in this file suggests `this` context might be tricky if not bound?
+                // Actually `handleQuizGenerate` uses `e.index` for showToast but `this.resultData` for data.
+                // The previous handler I wrote `handlePaperGenerate` used `this.stage`.
+                // In this file `e.index` seems to be a valid reference to the page instance or global helper?
+                // Checking line 398: `e.index.setNavigationBarTitle`.
+                // But `handlePaperGenerate` used `wx.showToast`.
+                // Let's stick to `LLMService` call and `this.resultData`.
+
+                const result = await LLMService.callGemini(prompt);
+
+                this.resultData = {
+                    title: "错题强化训练方案",
+                    contentBlocks: [
+                        { type: 'p', text: result }
+                    ]
+                };
+
+                e.index.hideLoading();
+                this.stage = "result_page";
+                wx.pageScrollTo({ scrollTop: 0, duration: 0 });
+
+            } catch (err) {
+                console.error(err);
+                e.index.hideLoading();
+                e.index.showModal({
+                    title: "生成失败",
+                    content: err.message || "请稍后重试",
+                    showCancel: false
+                });
+            }
+        },
         handleStdAnswer() {
-        e.index.navigateTo({
-            url: "/pages/indievolve/scene_detail?id=" + this.sceneId + "&targetStage=standard_answer_input"
-        })
-    },
-    handleStdUpload() {
-        this.handleCommonUpload('solutionData');
-    },
+            e.index.navigateTo({
+                url: "/pages/indievolve/scene_detail?id=" + this.sceneId + "&targetStage=standard_answer_input"
+            })
+        },
+        handleStdUpload() {
+            this.handleCommonUpload('solutionData');
+        },
 
-    onDesignNameInput(e) { this.designData.lessonName = e.detail.value; },
-    onDesignStudentInput(e) { this.designData.studentInfo = e.detail.value; },
-    onDesignHoursInput(e) { this.designData.lessonHours = e.detail.value; },
-    onDesignKpContentInput(e) { this.designData.kpContent = e.detail.value; },
-    onDesignTbContentInput(e) { this.designData.textbookContent = e.detail.value; },
-    onDesignConditionSet(e) { this.designData.condition = e.currentTarget.dataset.val; },
-    handleViewHistory(e) {
-        // Placeholder for history view functionality
-        e.index.showToast({ title: "查看历史记录功能开发中", icon: "none" });
-    },
+        onDesignNameInput(e) { this.designData.lessonName = e.detail.value; },
+        onDesignStudentInput(e) { this.designData.studentInfo = e.detail.value; },
+        onDesignHoursInput(e) { this.designData.lessonHours = e.detail.value; },
+        onDesignKpContentInput(e) { this.designData.kpContent = e.detail.value; },
+        onDesignTbContentInput(e) { this.designData.textbookContent = e.detail.value; },
+        onDesignConditionSet(e) { this.designData.condition = e.currentTarget.dataset.val; },
+        handleViewHistory(e) {
+            // Placeholder for history view functionality
+            e.index.showToast({ title: "查看历史记录功能开发中", icon: "none" });
+        },
 
         handleStdGenerate() {
-        e.index.showLoading({ title: "正在生成..." });
-        setTimeout(() => {
-            e.index.hideLoading();
-            e.index.showToast({ title: "已生成标准答案", icon: "success" });
-        }, 1500);
-    },
-    async handleDesignGenerate() {
-        const d = this.designData;
-        if (!d.lessonName) {
-            e.index.showToast({ title: "请输入课题名称", icon: "none" });
-            return;
-        }
-        
-        e.index.showLoading({ title: "正在生成教学设计..." });
-        
-        const prompt = `
+            e.index.showLoading({ title: "正在生成..." });
+            setTimeout(() => {
+                e.index.hideLoading();
+                e.index.showToast({ title: "已生成标准答案", icon: "success" });
+            }, 1500);
+        },
+        async handleDesignGenerate() {
+            const d = this.designData;
+            if (!d.lessonName) {
+                e.index.showToast({ title: "请输入课题名称", icon: "none" });
+                return;
+            }
+
+            e.index.showLoading({ title: "正在生成教学设计..." });
+
+            const prompt = `
 R (角色)：你是一位经验丰富的${d.lessonName}教师。
 T (任务)：为我设计一份${d.lessonHours}的教学设计。
 C (约束)：
@@ -1346,218 +1483,218 @@ C (约束)：
 
 IMPORTANT: Output Language: Simplified Chinese (简体中文). All content must be in Chinese.
 `;
-        try {
-            // TIMEOUT RACE
-            const timeoutPromise = new Promise((_, reject) => 
-                setTimeout(() => reject(new Error("Timeout: LLM took too long")), 90000)
-            );
-            
-            const result = await Promise.race([
-                LLMService.callClaude(prompt),
-                timeoutPromise
-            ]);
+            try {
+                // TIMEOUT RACE
+                const timeoutPromise = new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error("Timeout: LLM took too long")), 90000)
+                );
 
-            console.log("LLM Result in Page:", result?.length);
-            
-            // Strategy 1: Vue Reactivity
-            this.currResult = result;
-            this.resultData = {
-                title: d.lessonName + " 教学设计",
-                fullContent: result,
-                contentBlocks: [{ type: 'p', text: result }]
-            };
-            
-            // Strategy 3: Native MP setData (Fallback)
-            const nativePage = this.$scope || this;
-            if (nativePage && typeof nativePage.setData === 'function') {
-                console.log("Forcing native setData update (Design)");
-                nativePage.setData({
-                    'resultData.fullContent': result,
-                    'resultData.contentBlocks': [{ type: 'p', text: result }],
-                    currResult: result,
-                    res_debug: (result ? result.length : 0) + ' chars (Native)'
-                });
-            }
+                const result = await Promise.race([
+                    LLMService.callClaude(prompt),
+                    timeoutPromise
+                ]);
 
-            e.index.hideLoading();
-            this.stage = "result_page";
-            wx.pageScrollTo({ scrollTop: 0, duration: 0 });
-            
-        } catch (err) {
-            console.error(err);
-            e.index.hideLoading();
-            wx.showModal({ title: "生成失败", content: err.message, showCancel: false });
-        }
-    },
+                console.log("LLM Result in Page:", result?.length);
 
-    handleResultCopy() {
-        console.log("Copy Triggered. ResultData:", this.resultData);
-        e.index.showToast({ title: "正在复制...", icon: "none", duration: 1000 });
+                // Strategy 1: Vue Reactivity
+                this.currResult = result;
+                this.resultData = {
+                    title: d.lessonName + " 教学设计",
+                    fullContent: result,
+                    contentBlocks: [{ type: 'p', text: result }]
+                };
 
-        if (!this.resultData || !this.resultData.contentBlocks) {
-            console.error("No result data to copy");
-            e.index.showToast({ title: "没有内容可复制", icon: "none" });
-            return;
-        }
-        
-        let textToCopy = "";
-        
-        // Add Title
-        if(this.resultData.title) {
-            textToCopy += this.resultData.title + "\n\n";
-        }
-        
-        // Iterate blocks
-        this.resultData.contentBlocks.forEach(block => {
-            if (block.type === 'h1' || block.type === 'h2') {
-                textToCopy += block.text + "\n";
-            } else if (block.type === 'list') {
-                 if (block.items) {
-                     block.items.forEach(item => {
-                         textToCopy += "• " + item + "\n";
-                     });
-                 }
-            } else if (block.type === 'quote') {
-                if(block.title) textToCopy += block.title + "\n";
-                textToCopy += "> " + block.text + "\n";
-            } else {
-                // p and others
-                textToCopy += block.text + "\n";
-            }
-            textToCopy += "\n";
-        });
-        
-        wx.setClipboardData({
-            data: textToCopy,
-            success: () => {
-                wx.showToast({ title: "已复制全部内容", icon: "success" });
-            }
-        });
-    },
-
-    handleResultExport() {
-        if (!this.resultData || !this.resultData.contentBlocks) {
-             e.index.showToast({ title: "没有内容可导出", icon: "none" });
-             return;
-        }
-        
-        wx.showActionSheet({
-             itemList: ['导出为 Word (.docx)'],
-             success: (res) => {
-                 this.doExport('docx');
-             },
-             fail: (res) => {
-                 console.log(res.errMsg);
-             }
-        });
-    },
-
-    async doExport(format) {
-         e.index.showLoading({ title: "正在导出..." });
-         try {
-             // Use reactive currResult
-             const txt = this.currResult;
-             const contentToExport = txt ? 
-                txt.split('\n').map(line => ({ type: 'p', text: line })) : 
-                (this.resultData.contentBlocks || []);
-
-             // Prepare payload
-             const payload = {
-                 title: this.resultData.title || "Indievolve Export",
-                 content: contentToExport,
-                 format: format
-             };
-             
-             // Call Proxy (Using direct request since LLMService might be strictly for chat)
-             // We'll use wx.request
-             wx.request({
-                 url: `${apiConfig.PROXY_URL}/proxy/export`,
-                 method: 'POST',
-                 data: payload,
-                 success: (res) => {
-                     e.index.hideLoading();
-                     if (res.data && res.data.success && res.data.url) {
-                        // We have a download URL (should be GET)
-                        this.downloadAndOpen(res.data.url, format);
-                     } else {
-                         e.index.showToast({ title: "导出失败: " + (res.data.error || '未知错误'), icon: "none" });
-                     }
-                 },
-                 fail: (err) => {
-                     e.index.hideLoading();
-                     e.index.showToast({ title: "网络请求失败", icon: "none" });
-                     console.error(err);
-                 }
-             });
-
-         } catch (err) {
-             e.index.hideLoading();
-             console.error(err);
-             e.index.showToast({ title: "导出出错", icon: "none" });
-         }
-    },
-
-    downloadAndOpen(url, format) {
-        e.index.showLoading({ title: "正在下载..." });
-        wx.downloadFile({
-            url: url,
-            success: (res) => {
-                if (res.statusCode === 200) {
-                     const filePath = res.tempFilePath;
-                     wx.openDocument({
-                         filePath: filePath,
-                         fileType: format,
-                         showMenu: true,
-                         success: function () {
-                             e.index.hideLoading();
-                             console.log('打开文档成功');
-                         },
-                         fail: function(err) {
-                             e.index.hideLoading();
-                             e.index.showToast({ title: "打开文档失败", icon: "none" });
-                             console.error(err);
-                         }
-                     });
-                } else {
-                    e.index.hideLoading();
-                     e.index.showToast({ title: "下载失败 " + res.statusCode, icon: "none" });
+                // Strategy 3: Native MP setData (Fallback)
+                const nativePage = this.$scope || this;
+                if (nativePage && typeof nativePage.setData === 'function') {
+                    console.log("Forcing native setData update (Design)");
+                    nativePage.setData({
+                        'resultData.fullContent': result,
+                        'resultData.contentBlocks': [{ type: 'p', text: result }],
+                        currResult: result,
+                        res_debug: (result ? result.length : 0) + ' chars (Native)'
+                    });
                 }
-            },
-            fail: (err) => {
+
                 e.index.hideLoading();
-                e.index.showToast({ title: "下载请求失败", icon: "none" });
+                this.stage = "result_page";
+                wx.pageScrollTo({ scrollTop: 0, duration: 0 });
+
+            } catch (err) {
                 console.error(err);
+                e.index.hideLoading();
+                wx.showModal({ title: "生成失败", content: err.message, showCancel: false });
             }
-        });
-    },
+        },
+
+        handleResultCopy() {
+            console.log("Copy Triggered. ResultData:", this.resultData);
+            e.index.showToast({ title: "正在复制...", icon: "none", duration: 1000 });
+
+            if (!this.resultData || !this.resultData.contentBlocks) {
+                console.error("No result data to copy");
+                e.index.showToast({ title: "没有内容可复制", icon: "none" });
+                return;
+            }
+
+            let textToCopy = "";
+
+            // Add Title
+            if (this.resultData.title) {
+                textToCopy += this.resultData.title + "\n\n";
+            }
+
+            // Iterate blocks
+            this.resultData.contentBlocks.forEach(block => {
+                if (block.type === 'h1' || block.type === 'h2') {
+                    textToCopy += block.text + "\n";
+                } else if (block.type === 'list') {
+                    if (block.items) {
+                        block.items.forEach(item => {
+                            textToCopy += "• " + item + "\n";
+                        });
+                    }
+                } else if (block.type === 'quote') {
+                    if (block.title) textToCopy += block.title + "\n";
+                    textToCopy += "> " + block.text + "\n";
+                } else {
+                    // p and others
+                    textToCopy += block.text + "\n";
+                }
+                textToCopy += "\n";
+            });
+
+            wx.setClipboardData({
+                data: textToCopy,
+                success: () => {
+                    wx.showToast({ title: "已复制全部内容", icon: "success" });
+                }
+            });
+        },
+
+        handleResultExport() {
+            if (!this.resultData || !this.resultData.contentBlocks) {
+                e.index.showToast({ title: "没有内容可导出", icon: "none" });
+                return;
+            }
+
+            wx.showActionSheet({
+                itemList: ['导出为 Word (.docx)'],
+                success: (res) => {
+                    this.doExport('docx');
+                },
+                fail: (res) => {
+                    console.log(res.errMsg);
+                }
+            });
+        },
+
+        async doExport(format) {
+            e.index.showLoading({ title: "正在导出..." });
+            try {
+                // Use reactive currResult
+                const txt = this.currResult;
+                const contentToExport = txt ?
+                    txt.split('\n').map(line => ({ type: 'p', text: line })) :
+                    (this.resultData.contentBlocks || []);
+
+                // Prepare payload
+                const payload = {
+                    title: this.resultData.title || "Indievolve Export",
+                    content: contentToExport,
+                    format: format
+                };
+
+                // Call Proxy (Using direct request since LLMService might be strictly for chat)
+                // We'll use wx.request
+                wx.request({
+                    url: `${apiConfig.PROXY_URL}/proxy/export`,
+                    method: 'POST',
+                    data: payload,
+                    success: (res) => {
+                        e.index.hideLoading();
+                        if (res.data && res.data.success && res.data.url) {
+                            // We have a download URL (should be GET)
+                            this.downloadAndOpen(res.data.url, format);
+                        } else {
+                            e.index.showToast({ title: "导出失败: " + (res.data.error || '未知错误'), icon: "none" });
+                        }
+                    },
+                    fail: (err) => {
+                        e.index.hideLoading();
+                        e.index.showToast({ title: "网络请求失败", icon: "none" });
+                        console.error(err);
+                    }
+                });
+
+            } catch (err) {
+                e.index.hideLoading();
+                console.error(err);
+                e.index.showToast({ title: "导出出错", icon: "none" });
+            }
+        },
+
+        downloadAndOpen(url, format) {
+            e.index.showLoading({ title: "正在下载..." });
+            wx.downloadFile({
+                url: url,
+                success: (res) => {
+                    if (res.statusCode === 200) {
+                        const filePath = res.tempFilePath;
+                        wx.openDocument({
+                            filePath: filePath,
+                            fileType: format,
+                            showMenu: true,
+                            success: function () {
+                                e.index.hideLoading();
+                                console.log('打开文档成功');
+                            },
+                            fail: function (err) {
+                                e.index.hideLoading();
+                                e.index.showToast({ title: "打开文档失败", icon: "none" });
+                                console.error(err);
+                            }
+                        });
+                    } else {
+                        e.index.hideLoading();
+                        e.index.showToast({ title: "下载失败 " + res.statusCode, icon: "none" });
+                    }
+                },
+                fail: (err) => {
+                    e.index.hideLoading();
+                    e.index.showToast({ title: "下载请求失败", icon: "none" });
+                    console.error(err);
+                }
+            });
+        },
 
 
 
 
-    onLessonPlanSubject(e) { this.lessonPlanData.subject = e.detail.value; },
-    onLessonPlanGradeClass(e) { this.lessonPlanData.gradeClass = e.detail.value; },
-    onLessonPlanTopic(e) { this.lessonPlanData.topic = e.detail.value; },
-    onLessonPlanDuration(e) { this.lessonPlanData.duration = e.detail.value; },
-    onLessonPlanPoints(e) { this.lessonPlanData.designKeyPoints = e.detail.value; },
-    onLessonPlanType(e) { this.lessonPlanData.lessonType = e.currentTarget.dataset.val; },
-    onLessonPlanFormat(e) { this.lessonPlanData.format = e.currentTarget.dataset.val; },
-    onLessonPlanBlackboard(e) { this.lessonPlanData.blackboard = e.currentTarget.dataset.val; },
-    onLessonPlanHomework(e) { this.lessonPlanData.homework = e.detail.value; },
-    onLessonPlanStyle(e) { this.lessonPlanData.style = e.currentTarget.dataset.val; },
+        onLessonPlanSubject(e) { this.lessonPlanData.subject = e.detail.value; },
+        onLessonPlanGradeClass(e) { this.lessonPlanData.gradeClass = e.detail.value; },
+        onLessonPlanTopic(e) { this.lessonPlanData.topic = e.detail.value; },
+        onLessonPlanDuration(e) { this.lessonPlanData.duration = e.detail.value; },
+        onLessonPlanPoints(e) { this.lessonPlanData.designKeyPoints = e.detail.value; },
+        onLessonPlanType(e) { this.lessonPlanData.lessonType = e.currentTarget.dataset.val; },
+        onLessonPlanFormat(e) { this.lessonPlanData.format = e.currentTarget.dataset.val; },
+        onLessonPlanBlackboard(e) { this.lessonPlanData.blackboard = e.currentTarget.dataset.val; },
+        onLessonPlanHomework(e) { this.lessonPlanData.homework = e.detail.value; },
+        onLessonPlanStyle(e) { this.lessonPlanData.style = e.currentTarget.dataset.val; },
 
-    async handleLessonPlanGenerate() {
-         const d = this.lessonPlanData;
-         if (!d.topic) {
-             e.index.showToast({ title: "请输入课题名称", icon: "none" });
-             return;
-         }
+        async handleLessonPlanGenerate() {
+            const d = this.lessonPlanData;
+            if (!d.topic) {
+                e.index.showToast({ title: "请输入课题名称", icon: "none" });
+                return;
+            }
 
-         this.stage = "loading_page";
-         wx.pageScrollTo({ scrollTop: 0, duration: 0 });
+            this.stage = "loading_page";
+            wx.pageScrollTo({ scrollTop: 0, duration: 0 });
 
-         try {
-             // USER PROVIDED PROMPT FOR LESSON PLAN
-             const prompt = `R (角色)：你是一位经验丰富的教研员（说明：可改为学科带头人），擅长撰写规范实用的教案。
+            try {
+                // USER PROVIDED PROMPT FOR LESSON PLAN
+                const prompt = `R (角色)：你是一位经验丰富的教研员（说明：可改为学科带头人），擅长撰写规范实用的教案。
 T (任务)：为【${d.topic}】撰写教案。
 
 C (约束)：
@@ -1618,84 +1755,84 @@ F (输出格式)：
 
 IMPORTANT: Output Language: Simplified Chinese (简体中文). All content must be in Chinese.`;
 
-             // TIMEOUT RACE
-             const timeoutPromise = new Promise((_, reject) => 
-                setTimeout(() => reject(new Error("Timeout: LLM took too long")), 90000)
-             );
-            
-             const content = await Promise.race([
-                 LLMService.callClaude(prompt),
-                 timeoutPromise
-             ]);
+                // TIMEOUT RACE
+                const timeoutPromise = new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error("Timeout: LLM took too long")), 90000)
+                );
 
-             const blocks = this.parseMarkdownToBlocks(content);
-             
-             // Strategy 1: Vue Reactivity
-             this.resultData = {
-                 title: d.topic + " - 教案",
-                 contentBlocks: blocks,
-                 fullContent: content
-             };
-             this.currResult = content;
+                const content = await Promise.race([
+                    LLMService.callClaude(prompt),
+                    timeoutPromise
+                ]);
 
-             // Strategy 3: Native MP setData (Fallback)
-             const nativePage = this.$scope || this;
-             if (nativePage && typeof nativePage.setData === 'function') {
-                 console.log("Forcing native setData update (LessonPlan)");
-                 nativePage.setData({
-                     'resultData.title': d.topic + " - 教案",
-                     'resultData.contentBlocks': blocks,
-                     'resultData.fullContent': content,
-                     currResult: content,
-                     res_debug: (content ? content.length : 0) + ' chars (Native)'
-                 });
-             }
-             
-             this.stage = "result_page"; 
-             wx.pageScrollTo({ scrollTop: 0, duration: 0 });
-             this.completeTask(30);
- 
-         } catch (err) {
-             console.error("Lesson Plan Gen Error:", err);
-             e.index.hideLoading();
-             wx.showModal({
-                title: '生成失败',
-                content: '原因: ' + (err.message || '未知错误'),
-                showCancel: false
-            });
-             this.stage = "lesson_plan_input"; 
-         }
-    },
+                const blocks = this.parseMarkdownToBlocks(content);
 
-    // --- PPT Handlers ---
-    onPPTSubjectInput(e) { this.pptData.subject = e.detail.value; },
-    onPPTGradeInput(e) { this.pptData.grade = e.detail.value; },
-    onPPTTopicInput(e) { this.pptData.topic = e.detail.value; },
-    onPPTPagesInput(e) { this.pptData.pages = e.detail.value; },
-    onPPTContentInput(e) { this.pptData.content = e.detail.value; },
-    onPPTCoverInput(e) { this.pptData.cover = e.detail.value; },
-    onPPTKeyPointsInput(e) { this.pptData.keyPoints = e.detail.value; },
-    onPPTInteractInput(e) { this.pptData.interaction = e.detail.value; },
-    onPPTInnovationInput(e) {
-        const idx = e.currentTarget.dataset.idx;
-        this.pptData.innovations[idx] = e.detail.value;
-    },
-    handlePPTPresentation(e) { this.pptData.presentationMode = e.currentTarget.dataset.val; },
-    handlePPTStyle(e) { this.pptData.style = e.currentTarget.dataset.val; },
+                // Strategy 1: Vue Reactivity
+                this.resultData = {
+                    title: d.topic + " - 教案",
+                    contentBlocks: blocks,
+                    fullContent: content
+                };
+                this.currResult = content;
 
-    async handlePPTGenerate() {
-        const d = this.pptData;
-        if (!d.topic) {
-             e.index.showToast({ title: "请输入课题名称", icon: "none" });
-             return;
-        }
+                // Strategy 3: Native MP setData (Fallback)
+                const nativePage = this.$scope || this;
+                if (nativePage && typeof nativePage.setData === 'function') {
+                    console.log("Forcing native setData update (LessonPlan)");
+                    nativePage.setData({
+                        'resultData.title': d.topic + " - 教案",
+                        'resultData.contentBlocks': blocks,
+                        'resultData.fullContent': content,
+                        currResult: content,
+                        res_debug: (content ? content.length : 0) + ' chars (Native)'
+                    });
+                }
 
-        this.stage = "loading_page";
-        wx.pageScrollTo({ scrollTop: 0, duration: 0 });
+                this.stage = "result_page";
+                wx.pageScrollTo({ scrollTop: 0, duration: 0 });
+                this.completeTask(30);
 
-        try {
-            // USER PROVIDED RTCF PROMPT FOR PPT
-            const prompt = `R (角色)：你是一位精通课件设计的教学专家。
+            } catch (err) {
+                console.error("Lesson Plan Gen Error:", err);
+                e.index.hideLoading();
+                wx.showModal({
+                    title: '生成失败',
+                    content: '原因: ' + (err.message || '未知错误'),
+                    showCancel: false
+                });
+                this.stage = "lesson_plan_input";
+            }
+        },
+
+        // --- PPT Handlers ---
+        onPPTSubjectInput(e) { this.pptData.subject = e.detail.value; },
+        onPPTGradeInput(e) { this.pptData.grade = e.detail.value; },
+        onPPTTopicInput(e) { this.pptData.topic = e.detail.value; },
+        onPPTPagesInput(e) { this.pptData.pages = e.detail.value; },
+        onPPTContentInput(e) { this.pptData.content = e.detail.value; },
+        onPPTCoverInput(e) { this.pptData.cover = e.detail.value; },
+        onPPTKeyPointsInput(e) { this.pptData.keyPoints = e.detail.value; },
+        onPPTInteractInput(e) { this.pptData.interaction = e.detail.value; },
+        onPPTInnovationInput(e) {
+            const idx = e.currentTarget.dataset.idx;
+            this.pptData.innovations[idx] = e.detail.value;
+        },
+        handlePPTPresentation(e) { this.pptData.presentationMode = e.currentTarget.dataset.val; },
+        handlePPTStyle(e) { this.pptData.style = e.currentTarget.dataset.val; },
+
+        async handlePPTGenerate() {
+            const d = this.pptData;
+            if (!d.topic) {
+                e.index.showToast({ title: "请输入课题名称", icon: "none" });
+                return;
+            }
+
+            this.stage = "loading_page";
+            wx.pageScrollTo({ scrollTop: 0, duration: 0 });
+
+            try {
+                // USER PROVIDED RTCF PROMPT FOR PPT
+                const prompt = `R (角色)：你是一位精通课件设计的教学专家。
 T (任务)：为【${d.topic}】设计课件方案。
 
 C (约束)：
@@ -1742,93 +1879,93 @@ F (输出格式)：
 2. 中30分钟：[做什么]
 3. 后15分钟：[做什么]`;
 
-            const content = await LLMService.callClaude(prompt);
-            const blocks = this.parseMarkdownToBlocks(content);
+                const content = await LLMService.callClaude(prompt);
+                const blocks = this.parseMarkdownToBlocks(content);
 
-            this.resultData = {
-                title: d.topic + " - 课件方案",
-                contentBlocks: blocks
-            };
-            
-            this.stage = "result_page"; 
-            wx.pageScrollTo({ scrollTop: 0, duration: 0 });
-            this.completeTask(30);
+                this.resultData = {
+                    title: d.topic + " - 课件方案",
+                    contentBlocks: blocks
+                };
 
-        } catch (err) {
-            console.error("PPT Gen Error:", err);
-            e.index.showToast({ title: "生成失败", icon: "none" });
-            this.stage = "ppt_input"; // Assuming you have added PPT_INPUT stage logic in WXML (yes, checked)
-        }
-    },
+                this.stage = "result_page";
+                wx.pageScrollTo({ scrollTop: 0, duration: 0 });
+                this.completeTask(30);
 
-    handleMultiSol() {
-        e.index.navigateTo({
-             url: "/pages/indievolve/scene_detail?id=" + this.sceneId + "&targetStage=multiple_solutions_input"
-        })
-    },
-    handleMultiSolUpload() {
-        e.index.chooseMessageFile({
-            count: 1,
-            type: 'all',
-            extension: ['doc', 'docx', 'pdf', 'jpg', 'png'],
-            success: (res) => {
-                const file = res.tempFiles[0];
-                this.multiSolData.content = `[已上传文件] ${file.name}`;
-                e.index.showToast({ title: "上传成功", icon: "success" });
+            } catch (err) {
+                console.error("PPT Gen Error:", err);
+                e.index.showToast({ title: "生成失败", icon: "none" });
+                this.stage = "ppt_input"; // Assuming you have added PPT_INPUT stage logic in WXML (yes, checked)
             }
-        })
-    },
-    handleMultiSolGenerate() {
-        e.index.showLoading({ title: "正在探索解法..." });
-        setTimeout(() => {
-            e.index.hideLoading();
-            e.index.showToast({ title: "探索完成", icon: "success" });
-        }, 1500);
-    },
-    handleVariation() {
-        e.index.navigateTo({
-             url: "/pages/indievolve/scene_detail?id=" + this.sceneId + "&targetStage=variation_input"
-        });
-    },
-    handleVariationUpload() {
-        e.index.chooseMessageFile({
-            count: 1,
-            type: 'all',
-            extension: ['doc', 'docx', 'pdf', 'jpg', 'png'],
-            success: (res) => {
-                const file = res.tempFiles[0];
-                this.variationData.content = `[已上传文件] ${file.name}`;
-                e.index.showToast({ title: "上传成功", icon: "success" });
+        },
+
+        handleMultiSol() {
+            e.index.navigateTo({
+                url: "/pages/indievolve/scene_detail?id=" + this.sceneId + "&targetStage=multiple_solutions_input"
+            })
+        },
+        handleMultiSolUpload() {
+            e.index.chooseMessageFile({
+                count: 1,
+                type: 'all',
+                extension: ['doc', 'docx', 'pdf', 'jpg', 'png'],
+                success: (res) => {
+                    const file = res.tempFiles[0];
+                    this.multiSolData.content = `[已上传文件] ${file.name}`;
+                    e.index.showToast({ title: "上传成功", icon: "success" });
+                }
+            })
+        },
+        handleMultiSolGenerate() {
+            e.index.showLoading({ title: "正在探索解法..." });
+            setTimeout(() => {
+                e.index.hideLoading();
+                e.index.showToast({ title: "探索完成", icon: "success" });
+            }, 1500);
+        },
+        handleVariation() {
+            e.index.navigateTo({
+                url: "/pages/indievolve/scene_detail?id=" + this.sceneId + "&targetStage=variation_input"
+            });
+        },
+        handleVariationUpload() {
+            e.index.chooseMessageFile({
+                count: 1,
+                type: 'all',
+                extension: ['doc', 'docx', 'pdf', 'jpg', 'png'],
+                success: (res) => {
+                    const file = res.tempFiles[0];
+                    this.variationData.content = `[已上传文件] ${file.name}`;
+                    e.index.showToast({ title: "上传成功", icon: "success" });
+                }
+            });
+        },
+        handleOfficial() {
+            e.index.navigateTo({
+                url: "/pages/indievolve/scene_detail?id=" + this.sceneId + "&targetStage=official_input"
+            });
+        },
+        handleReport() {
+            e.index.navigateTo({
+                url: "/pages/indievolve/scene_detail?id=" + this.sceneId + "&targetStage=report_input"
+            });
+        },
+        handleSummary() {
+            e.index.navigateTo({
+                url: "/pages/indievolve/scene_detail?id=" + this.sceneId + "&targetStage=summary_input"
+            });
+        },
+
+        async handleSummaryGenerate() {
+            const d = this.summaryData;
+            if (!d.actName) {
+                e.index.showToast({ title: "请输入活动名称", icon: "none" });
+                return;
             }
-        });
-    },
-    handleOfficial() {
-        e.index.navigateTo({
-             url: "/pages/indievolve/scene_detail?id=" + this.sceneId + "&targetStage=official_input"
-        });
-    },
-    handleReport() {
-        e.index.navigateTo({
-             url: "/pages/indievolve/scene_detail?id=" + this.sceneId + "&targetStage=report_input"
-        });
-    },
-    handleSummary() {
-        e.index.navigateTo({
-             url: "/pages/indievolve/scene_detail?id=" + this.sceneId + "&targetStage=summary_input"
-        });
-    },
 
-    async handleSummaryGenerate() {
-        const d = this.summaryData;
-        if (!d.actName) {
-            e.index.showToast({ title: "请输入活动名称", icon: "none" });
-            return;
-        }
+            this.stage = "loading_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
 
-        this.stage = "loading_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
-
-        try {
-            const prompt = `R(Role): School Administrator.
+            try {
+                const prompt = `R(Role): School Administrator.
 T(Task): PLease write an Activity Summary Report.
 Content:
 - Activity: ${d.actName}
@@ -1847,34 +1984,34 @@ F(Output Format): Markdown.
 
 Language: Simplified Chinese.`;
 
-            const content = await LLMService.callClaude(prompt);
-            const blocks = this.parseMarkdownToBlocks(content);
+                const content = await LLMService.callClaude(prompt);
+                const blocks = this.parseMarkdownToBlocks(content);
 
-            this.resultData = {
-                title: d.actName + " - 活动总结",
-                contentBlocks: blocks
-            };
-            this.stage = "result_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
-            this.completeTask(20);
+                this.resultData = {
+                    title: d.actName + " - 活动总结",
+                    contentBlocks: blocks
+                };
+                this.stage = "result_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
+                this.completeTask(20);
 
-        } catch (err) {
-            console.error("Summary Gen Error:", err);
-            e.index.showToast({ title: "生成失败", icon: "none" });
-            this.stage = "summary_input";
-        }
-    },
-    async handleOfficialGenerate() {
-        const d = this.officialData;
-        if (!d.activityName) {
-            e.index.showToast({ title: "请输入活动名称", icon: "none" });
-            return;
-        }
+            } catch (err) {
+                console.error("Summary Gen Error:", err);
+                e.index.showToast({ title: "生成失败", icon: "none" });
+                this.stage = "summary_input";
+            }
+        },
+        async handleOfficialGenerate() {
+            const d = this.officialData;
+            if (!d.activityName) {
+                e.index.showToast({ title: "请输入活动名称", icon: "none" });
+                return;
+            }
 
-        this.stage = "loading_page";
-        wx.pageScrollTo({ scrollTop: 0, duration: 0 });
+            this.stage = "loading_page";
+            wx.pageScrollTo({ scrollTop: 0, duration: 0 });
 
-        try {
-            const prompt = `R(Role): School Media Specialist.
+            try {
+                const prompt = `R(Role): School Media Specialist.
 T(Task): Write a School Official Account Article (Tweet).
 Content:
 - Title: ${d.activityName}
@@ -1895,66 +2032,66 @@ Structure:
 
 Language: Simplified Chinese. Tone: Professional yet warm.`;
 
-            const content = await LLMService.callClaude(prompt);
-            const blocks = this.parseMarkdownToBlocks(content);
+                const content = await LLMService.callClaude(prompt);
+                const blocks = this.parseMarkdownToBlocks(content);
 
-            this.resultData = {
-                title: "校园推文生成结果",
-                contentBlocks: blocks
+                this.resultData = {
+                    title: "校园推文生成结果",
+                    contentBlocks: blocks
+                };
+                this.stage = "result_page";
+                wx.pageScrollTo({ scrollTop: 0, duration: 0 });
+                this.completeTask(20);
+
+            } catch (err) {
+                console.error("Official Gen Error:", err);
+                e.index.showToast({ title: "生成失败", icon: "none" });
+                this.stage = "official_input";
+            }
+        },
+        handleVariationGenerate() {
+            e.index.showLoading({ title: "正在生成变式..." });
+            setTimeout(() => {
+                e.index.hideLoading();
+                e.index.showToast({ title: "生成完成", icon: "success" });
+            }, 1500);
+        },
+        // Adaptation Handlers
+        ad_toggleAdv() { this.adaptData.isAdvancedOpen = !this.adaptData.isAdvancedOpen; },
+        ad_onTbOrigin(e) { this.adaptData.tbVerOrigin = e.detail.value; },
+        ad_onTbTarget(e) { this.adaptData.tbVerTarget = e.detail.value; },
+        ad_onContext(e) { this.adaptData.context = e.detail.value; },
+        ad_onModernize(e) { this.adaptData.modernize = e.detail.value; },
+        ad_setDiff(e) { this.adaptData.diffLevel = e.currentTarget.dataset.val; },
+        ad_setAnsReq(e) { this.adaptData.answerReq = e.currentTarget.dataset.val; },
+        ad_setStyle(e) { this.adaptData.style = e.currentTarget.dataset.val; },
+        ad_onSpecial(e) { this.adaptData.special = e.detail.value; },
+
+        async ad_generate() {
+            e.index.showToast({ title: "DEBUG: API Start", icon: "none" });
+            const data = this.adaptData;
+            if (!data.content && !data.file) {
+                e.index.showToast({ title: "请提供原题内容", icon: "none" });
+                return;
+            }
+
+            const reqMap = {
+                'textbook': `1-教材适配：${data.tbVerOrigin || '原版本'}→${data.tbVerTarget || '目标版本'}`,
+                'local': `2-情境本土化：${data.context ? '结合' + data.context : '外地→本地'}`,
+                'modern': `3-内容时代化：更新陈旧数据/加入前沿元素`,
+                'diff': `4-难度调整：${data.diffLevel === 'easy' ? '降低' : data.diffLevel === 'hard' ? '提高' : '保持'}`,
+                'answer': `5-答案完善：需详解`
             };
-            this.stage = "result_page"; 
-            wx.pageScrollTo({ scrollTop: 0, duration: 0 });
-            this.completeTask(20);
 
-        } catch (err) {
-            console.error("Official Gen Error:", err);
-            e.index.showToast({ title: "生成失败", icon: "none" });
-            this.stage = "official_input";
-        }
-    },
-    handleVariationGenerate() {
-        e.index.showLoading({ title: "正在生成变式..." });
-        setTimeout(() => {
-            e.index.hideLoading();
-            e.index.showToast({ title: "生成完成", icon: "success" });
-        }, 1500);
-    },
-    // Adaptation Handlers
-    ad_toggleAdv() { this.adaptData.isAdvancedOpen = !this.adaptData.isAdvancedOpen; },
-    ad_onTbOrigin(e) { this.adaptData.tbVerOrigin = e.detail.value; },
-    ad_onTbTarget(e) { this.adaptData.tbVerTarget = e.detail.value; },
-    ad_onContext(e) { this.adaptData.context = e.detail.value; },
-    ad_onModernize(e) { this.adaptData.modernize = e.detail.value; },
-    ad_setDiff(e) { this.adaptData.diffLevel = e.currentTarget.dataset.val; },
-    ad_setAnsReq(e) { this.adaptData.answerReq = e.currentTarget.dataset.val; },
-    ad_setStyle(e) { this.adaptData.style = e.currentTarget.dataset.val; },
-    ad_onSpecial(e) { this.adaptData.special = e.detail.value; },
+            let reqList = [];
+            if (data.requirements && data.requirements.length > 0) {
+                data.requirements.forEach(r => {
+                    if (reqMap[r]) reqList.push(reqMap[r]);
+                    else reqList.push(r);
+                });
+            }
 
-    async ad_generate() {
-        e.index.showToast({ title: "DEBUG: API Start", icon: "none" });
-        const data = this.adaptData;
-        if (!data.content && !data.file) {
-            e.index.showToast({ title: "请提供原题内容", icon: "none" });
-            return;
-        }
-
-        const reqMap = {
-            'textbook': `1-教材适配：${data.tbVerOrigin || '原版本'}→${data.tbVerTarget || '目标版本'}`,
-            'local': `2-情境本土化：${data.context ? '结合' + data.context : '外地→本地'}`,
-            'modern': `3-内容时代化：更新陈旧数据/加入前沿元素`,
-            'diff': `4-难度调整：${data.diffLevel === 'easy' ? '降低' : data.diffLevel === 'hard' ? '提高' : '保持'}`,
-            'answer': `5-答案完善：需详解` 
-        };
-        
-        let reqList = [];
-        if (data.requirements && data.requirements.length > 0) {
-            data.requirements.forEach(r => {
-                if(reqMap[r]) reqList.push(reqMap[r]);
-                else reqList.push(r); 
-            });
-        }
-
-        const prompt = `
+            const prompt = `
 R (角色)：你是一位经验丰富的${data.subject || '学科'}教师，擅长改编创新题目，让旧题焕发新生。
 
 T (任务)：请帮我改编这道${data.grade || ''}年级的题目。
@@ -2022,29 +2159,29 @@ F (输出格式)：
 - "检查答案" → 重新验证答案准确性
 `;
 
-        e.index.showLoading({ title: "正在改编..." });
+            e.index.showLoading({ title: "正在改编..." });
 
-        try {
-            const result = await LLMService.callGemini(prompt);
-            this.resultData = {
-                title: "题目改编优化结果",
-                contentBlocks: [
-                    { type: 'p', text: result }
-                ]
-            };
-            e.index.hideLoading();
-            this.stage = "result_page"; 
-            wx.pageScrollTo({ scrollTop: 0, duration: 0 });
-        } catch (error) {
-            console.error(error);
-            e.index.hideLoading();
-             e.index.showModal({
-                title: "改编失败",
-                content: error.message || "请稍后重试",
-                showCancel: false
-            });
-        }
-    },
+            try {
+                const result = await LLMService.callGemini(prompt);
+                this.resultData = {
+                    title: "题目改编优化结果",
+                    contentBlocks: [
+                        { type: 'p', text: result }
+                    ]
+                };
+                e.index.hideLoading();
+                this.stage = "result_page";
+                wx.pageScrollTo({ scrollTop: 0, duration: 0 });
+            } catch (error) {
+                console.error(error);
+                e.index.hideLoading();
+                e.index.showModal({
+                    title: "改编失败",
+                    content: error.message || "请稍后重试",
+                    showCancel: false
+                });
+            }
+        },
         handleBatchMode() {
             this.isBatchVoiceEntry = false;
             this.ocrData = [];
@@ -2097,117 +2234,117 @@ F (输出格式)：
             // And I will implement handleVoiceBatch here.
         },
 
-    handleManualBatch() {
-        this.isManualBatch = true; // Set Flag
-        this.ocrData = [{ name: "", text: "" }];
-        this.stage = "batch_ocr_result";
-    },
-    handleBatchRetry() {
-        e.index.navigateBack();
-    },
-    handleBatchConfirm() {
-        this.currStyle = '鼓励式教育'; 
-        this.currWord = 120;
-        this.currCount = 1;
-        this.batchActionCount = 1;
-        this.batchType = '期末';
-        this.stage = "batch_params";
-    },
-    handleSelectStyle(e) {
-        this.batchStyle = e.currentTarget.dataset.val;
-    },
-    handleSelectWordCount(e) {
-        this.batchWordCount = Number(e.currentTarget.dataset.val);
-    },
-    handleSelectCount(e) {
-        this.batchCount = Number(e.currentTarget.dataset.val);
-    },
-    handleCopyResult(e) {
-        const content = e.currentTarget.dataset.content;
-        e.index.setClipboardData({
-            data: content,
-            success: () => {
-                e.index.showToast({ title: "已复制", icon: "success" })
-            }
-        })
-    },
-    handleRegenerateResult(e) {
-        const index = e.currentTarget.dataset.index;
-        e.index.showLoading({ title: "重写中..." });
-        setTimeout(() => {
-            e.index.hideLoading();
-            // Simulate content update
-            this.batchResults[index].content = "(重写后) " + this.batchResults[index].content.substring(0, 50) + "...";
-            e.index.showToast({ title: "重写完成", icon: "none" });
-        }, 1000);
-    },
-    handleBatchFinish() {
-         const allContent = this.batchResults.map(r => `${r.name}: ${r.content}`).join('\n\n');
-         e.index.setClipboardData({
-            data: allContent,
-            success: () => {
-                e.index.showToast({ title: "全部已复制", icon: "success" });
-                setTimeout(() => {
-                    e.index.reLaunch({ url: '/pages/indievolve/home' });
-                }, 500)
-            }
-        })
-    },
-    handleBatchTweak() {
-         e.index.showLoading({ title: "微调中..." });
-         setTimeout(() => {
-             this.batchResults = this.batchResults.map(r => ({
-                 ...r,
-                 content: `(微调后) ${r.content}`
-             }));
-             e.index.hideLoading();
-             e.index.showToast({ title: "已批量微调", icon: "success" });
-         }, 1000);
-    },
-    handleAddStudentRow() {
-        this.ocrData.push({ name: "", text: "" });
-    },
-    handleOCRNameChange(e) {
-        const index = e.currentTarget.dataset.index;
-        this.ocrData[index].name = e.detail.value;
-    },
-    handleOCRTextChange(e) {
-        const index = e.currentTarget.dataset.index;
-        this.ocrData[index].text = e.detail.value;
-    },
-    handleDeleteStudentRow(e) {
-        const index = e.currentTarget.dataset.index;
-        this.ocrData.splice(index, 1);
-    },
-    handleBatchKeywordsInput(e) {
-        this.batchKeywords = e.detail.value;
-    },
-    handleBatchRoleInput(e) {
-        this.batchRole = e.detail.value;
-    },
-    bindRole(e) { this.batchRole = e.detail.value; },
-    bindKeywords(e) { this.batchKeywords = e.detail.value; },
-    setBatchType(e) { this.batchType = e.currentTarget.dataset.val; },
-    setStyle(e) { this.currStyle = e.currentTarget.dataset.val; }, // Use currStyle to match WXML
-    setWord(e) { this.currWord = parseInt(e.currentTarget.dataset.val); }, // Use currWord
-    setActionCount(e) { this.batchActionCount = parseInt(e.currentTarget.dataset.val); },
-    setCount(e) { this.currCount = parseInt(e.currentTarget.dataset.val); },
-    toggleAdv() { this.isAdv = !this.isAdv; }, // For advanced toggle
-    
-    generate() {
-        if (!this.ocrData || this.ocrData.length === 0) return;
-        
-        e.index.showLoading({ title: "批量生成中..." });
-        
-        const role = this.batchRole || "班主任";
-        const style = this.currStyle || "鼓励式教育";
-        const type = this.batchType || "期末";
-        const wordLimit = this.currWord || 120;
-        const actionCount = this.batchActionCount || 1;
-        
-        const promises = this.ocrData.map((student, idx) => {
-             // Construct Prompt based on User Template
-             const prompt = `
+        handleManualBatch() {
+            this.isManualBatch = true; // Set Flag
+            this.ocrData = [{ name: "", text: "" }];
+            this.stage = "batch_ocr_result";
+        },
+        handleBatchRetry() {
+            e.index.navigateBack();
+        },
+        handleBatchConfirm() {
+            this.currStyle = '鼓励式教育';
+            this.currWord = 120;
+            this.currCount = 1;
+            this.batchActionCount = 1;
+            this.batchType = '期末';
+            this.stage = "batch_params";
+        },
+        handleSelectStyle(e) {
+            this.batchStyle = e.currentTarget.dataset.val;
+        },
+        handleSelectWordCount(e) {
+            this.batchWordCount = Number(e.currentTarget.dataset.val);
+        },
+        handleSelectCount(e) {
+            this.batchCount = Number(e.currentTarget.dataset.val);
+        },
+        handleCopyResult(e) {
+            const content = e.currentTarget.dataset.content;
+            e.index.setClipboardData({
+                data: content,
+                success: () => {
+                    e.index.showToast({ title: "已复制", icon: "success" })
+                }
+            })
+        },
+        handleRegenerateResult(e) {
+            const index = e.currentTarget.dataset.index;
+            e.index.showLoading({ title: "重写中..." });
+            setTimeout(() => {
+                e.index.hideLoading();
+                // Simulate content update
+                this.batchResults[index].content = "(重写后) " + this.batchResults[index].content.substring(0, 50) + "...";
+                e.index.showToast({ title: "重写完成", icon: "none" });
+            }, 1000);
+        },
+        handleBatchFinish() {
+            const allContent = this.batchResults.map(r => `${r.name}: ${r.content}`).join('\n\n');
+            e.index.setClipboardData({
+                data: allContent,
+                success: () => {
+                    e.index.showToast({ title: "全部已复制", icon: "success" });
+                    setTimeout(() => {
+                        e.index.reLaunch({ url: '/pages/indievolve/home' });
+                    }, 500)
+                }
+            })
+        },
+        handleBatchTweak() {
+            e.index.showLoading({ title: "微调中..." });
+            setTimeout(() => {
+                this.batchResults = this.batchResults.map(r => ({
+                    ...r,
+                    content: `(微调后) ${r.content}`
+                }));
+                e.index.hideLoading();
+                e.index.showToast({ title: "已批量微调", icon: "success" });
+            }, 1000);
+        },
+        handleAddStudentRow() {
+            this.ocrData.push({ name: "", text: "" });
+        },
+        handleOCRNameChange(e) {
+            const index = e.currentTarget.dataset.index;
+            this.ocrData[index].name = e.detail.value;
+        },
+        handleOCRTextChange(e) {
+            const index = e.currentTarget.dataset.index;
+            this.ocrData[index].text = e.detail.value;
+        },
+        handleDeleteStudentRow(e) {
+            const index = e.currentTarget.dataset.index;
+            this.ocrData.splice(index, 1);
+        },
+        handleBatchKeywordsInput(e) {
+            this.batchKeywords = e.detail.value;
+        },
+        handleBatchRoleInput(e) {
+            this.batchRole = e.detail.value;
+        },
+        bindRole(e) { this.batchRole = e.detail.value; },
+        bindKeywords(e) { this.batchKeywords = e.detail.value; },
+        setBatchType(e) { this.batchType = e.currentTarget.dataset.val; },
+        setStyle(e) { this.currStyle = e.currentTarget.dataset.val; }, // Use currStyle to match WXML
+        setWord(e) { this.currWord = parseInt(e.currentTarget.dataset.val); }, // Use currWord
+        setActionCount(e) { this.batchActionCount = parseInt(e.currentTarget.dataset.val); },
+        setCount(e) { this.currCount = parseInt(e.currentTarget.dataset.val); },
+        toggleAdv() { this.isAdv = !this.isAdv; }, // For advanced toggle
+
+        generate() {
+            if (!this.ocrData || this.ocrData.length === 0) return;
+
+            e.index.showLoading({ title: "批量生成中..." });
+
+            const role = this.batchRole || "班主任";
+            const style = this.currStyle || "鼓励式教育";
+            const type = this.batchType || "期末";
+            const wordLimit = this.currWord || 120;
+            const actionCount = this.batchActionCount || 1;
+
+            const promises = this.ocrData.map((student, idx) => {
+                // Construct Prompt based on User Template
+                const prompt = `
 R (角色)：你是高中【${role}】教师，擅长【${style}】
 T (任务)：为【单个学生】撰写【${type}】评语
 
@@ -2235,305 +2372,305 @@ F (格式)：
 第三段：具体建议
 不需要标题、称呼、落款`;
 
-            return LLMService.callClaude(prompt).then(res => ({
-                name: student.name || `学生${idx+1}`,
-                content: res || "生成失败"
-            })).catch(err => ({
-                name: student.name || `学生${idx+1}`,
-                content: "生成出错: " + err.message
-            }));
-        });
-
-        Promise.all(promises).then(results => {
-            e.index.hideLoading();
-            this.batchResults = results;
-            this.stage = "batch_result"; 
-        });
-    },
-    // --- New Batch Input Handlers (Voice & File) ---
-
-    // 1. Voice Record Start
-    handleVoiceStart() {
-        if (!this.recorder) {
-            this.recorder = wx.getRecorderManager();
-            this.recorder.onStop((res) => {
-                this.handleVoiceStop(res);
+                return LLMService.callClaude(prompt).then(res => ({
+                    name: student.name || `学生${idx + 1}`,
+                    content: res || "生成失败"
+                })).catch(err => ({
+                    name: student.name || `学生${idx + 1}`,
+                    content: "生成出错: " + err.message
+                }));
             });
-        }
-        wx.showToast({ title: '正在录音...', icon: 'none', duration: 60000 });
-        this.recorder.start({
-            format: 'aac', // Gemini supports aac
-            duration: 60000 // Max 60s
-        });
-    },
 
-    // 2. Voice Record End
-    handleVoiceEnd() {
-        if (this.recorder) {
-            this.recorder.stop();
-            wx.hideToast();
-        }
-    },
+            Promise.all(promises).then(results => {
+                e.index.hideLoading();
+                this.batchResults = results;
+                this.stage = "batch_result";
+            });
+        },
+        // --- New Batch Input Handlers (Voice & File) ---
 
-    // 3. Process Recorded Audio
-    // 3. Process Recorded Audio
-    handleVoiceStop(res) {
-        const { tempFilePath } = res;
-        console.log('Audio recorded:', tempFilePath);
-        
-        wx.showLoading({ title: '语音识别中...' });
-        
-        const fs = wx.getFileSystemManager();
-        fs.readFile({
-            filePath: tempFilePath,
-            encoding: 'base64',
-            success: (data) => {
-                if(this.isBatchVoiceEntry) {
-                    this.processBatchInput(null, data.data);
-                } else {
-                    this.processVoiceToText(data.data);
-                }
-            },
-            fail: (err) => {
-                console.error("Read Audio Failed", err);
-                wx.hideLoading();
-                wx.showToast({ title: '读取录音失败', icon: 'none' });
+        // 1. Voice Record Start
+        handleVoiceStart() {
+            if (!this.recorder) {
+                this.recorder = wx.getRecorderManager();
+                this.recorder.onStop((res) => {
+                    this.handleVoiceStop(res);
+                });
             }
-        });
-    },
+            wx.showToast({ title: '正在录音...', icon: 'none', duration: 60000 });
+            this.recorder.start({
+                format: 'aac', // Gemini supports aac
+                duration: 60000 // Max 60s
+            });
+        },
 
-    async processVoiceToText(audioBase64) {
-        try {
-            const prompt = "Transcribe the audio to Simplified Chinese text exactly as spoken. Do not add any commentary.";
-            const text = await LLMService.callGemini(prompt, null, audioBase64);
-            
-            if (text) {
-                // Populate Quick Gen field
-                this.singlePerf = (this.singlePerf || "") + text;
-                this.voiceStep = "idle";
-                wx.hideLoading();
-                wx.showToast({ title: '识别成功', icon: 'success' });
-            } else {
-                throw new Error("Empty transcription");
+        // 2. Voice Record End
+        handleVoiceEnd() {
+            if (this.recorder) {
+                this.recorder.stop();
+                wx.hideToast();
             }
-        } catch (err) {
-            console.error("Voice Transcribe Error:", err);
-            wx.hideLoading();
-            this.voiceStep = "idle";
-            wx.showToast({ title: '识别失败', icon: 'none' });
-        }
-    },
-    // 4. Handle File Input (Text/Image) - ActionSheet
-    handleFile() {
-        const that = this;
-        wx.showActionSheet({
-            itemList: ['从聊天记录选择文件 (PDF/Word/Excel)', '从相册选择图片'],
-            success(res) {
-                if (res.tapIndex === 0) {
-                    // Chat Files / Docs
-                    wx.chooseMessageFile({
-                        count: 1,
-                        type: 'file',
-                        extension: ['pdf', 'docx', 'doc', 'xlsx', 'xls', 'txt'],
-                        success(fileRes) {
-                            that.uploadAndParseBatchFile(fileRes.tempFiles[0].path);
-                        }
-                    });
-                } else if (res.tapIndex === 1) {
-                    // Album Images
-                    wx.chooseMedia({
-                        count: 1,
-                        mediaType: ['image'],
-                        sourceType: ['album'],
-                        success(mediaRes) {
-                             that.readImageAndProcess(mediaRes.tempFiles[0].tempFilePath);
-                        }
-                    });
-                }
-            },
-            fail(err) {
-                console.log("ActionSheet Cancelled", err);
-            }
-        });
-    },
+        },
 
-    // Helper: Upload & Parse Doc for Batch
-    uploadAndParseBatchFile(filePath) {
-        const that = this;
-        const apiConfig = require('../../config/api.js');
-        wx.showLoading({ title: '正在上传解析...' });
-        console.log("Uploading Doc to:", `${apiConfig.PROXY_URL}/proxy/upload`);
-        
-        wx.uploadFile({
-            url: `${apiConfig.PROXY_URL}/proxy/upload`,
-            filePath: filePath,
-            name: 'file',
-            success(uploadRes) {
-                console.log("Raw Upload Response:", uploadRes.data);
-                try {
-                    // Check if response is HTML error
-                    if (uploadRes.data && typeof uploadRes.data === 'string' && uploadRes.data.trim().startsWith('<')) {
-                         throw new Error(`Server returned HTML (likely Error): ${uploadRes.data.substring(0, 100)}...`);
-                    }
-                    const data = JSON.parse(uploadRes.data);
-                    if (data.success && data.content) {
-                        console.log("Parsed Doc Content:", data.content.substring(0, 50));
-                        that.processBatchInput(data.content, null, null);
+        // 3. Process Recorded Audio
+        // 3. Process Recorded Audio
+        handleVoiceStop(res) {
+            const { tempFilePath } = res;
+            console.log('Audio recorded:', tempFilePath);
+
+            wx.showLoading({ title: '语音识别中...' });
+
+            const fs = wx.getFileSystemManager();
+            fs.readFile({
+                filePath: tempFilePath,
+                encoding: 'base64',
+                success: (data) => {
+                    if (this.isBatchVoiceEntry) {
+                        this.processBatchInput(null, data.data);
                     } else {
-                        throw new Error(data.error || 'Parsing Failed');
+                        this.processVoiceToText(data.data);
                     }
-                } catch (e) {
-                    console.error("Parse Error:", e);
+                },
+                fail: (err) => {
+                    console.error("Read Audio Failed", err);
                     wx.hideLoading();
-                    wx.showModal({ title: '解析失败', content: '服务器返回数据异常。', showCancel: false });
-                }
-            },
-            fail(err) {
-                console.error("Upload Failed:", err);
-                wx.hideLoading();
-                wx.showToast({ title: '上传请求失败', icon: 'none' });
-            }
-        });
-    },
-
-    // Helper: Read Image & Process
-    readImageAndProcess(path) {
-        const that = this;
-        wx.showLoading({ title: '读取图片...' });
-        wx.getFileSystemManager().readFile({
-            filePath: path,
-            encoding: 'base64',
-            success: (data) => {
-                that.processBatchInput(null, null, data.data);
-            },
-            fail: (err) => {
-                wx.hideLoading();
-                wx.showToast({ title: '图片读取失败', icon: 'none' });
-            }
-        });
-    },
-
-    // 5. Core: Process Input (Text/Audio/Image) -> JSON List
-    async processBatchInput(text = null, audioBase64 = null, imageBase64 = null) {
-        try {
-            let prompt = "Tasks:\n1. Extract student names and their performance/behavior/keywords from the input.\n2. Output a strictly valid JSON list of objects: [{ \"name\": \"Student Name\", \"text\": \"Performance Content\" }].\n3. Do not include any markdown formatting (like ```json), just the raw JSON string.\n4. If the input contains no valid student data, return an empty list [].";
-            
-            if (text) prompt += `\nInput Text: ${text}`;
-            if (audioBase64) prompt = "Listen to the audio. " + prompt;
-            if (imageBase64) prompt = "Analyze the image. " + prompt;
-
-            // Use Gemini for Transcription/Extraction (Fast & Multimodal)
-            const result = await LLMService.callGemini(prompt, imageBase64, audioBase64);
-            
-            console.log("Extraction Result:", result);
-            
-            // Clean Markdown if present
-            let cleanJson = result.replace(/```json/g, '').replace(/```/g, '').trim();
-            const students = JSON.parse(cleanJson);
-
-            if (Array.isArray(students) && students.length > 0) {
-                // Determine if we append or replace?
-                // Let's replace for a clean "OCR Result" state as per unified workflow
-                this.ocrData = students;
-                this.isManualBatch = false; // Reset Flag
-                this.stage = 'batch_ocr_result';
-                wx.hideLoading();
-                wx.showToast({ title: '提取成功', icon: 'success' });
-            } else {
-                throw new Error("No student data found");
-            }
-
-        } catch (err) {
-            console.error("Batch Input Process Error:", err);
-            wx.hideLoading();
-            wx.showModal({
-                title: "识别失败",
-                content: "未能提取到学生名单，请重试或检查输入内容。",
-                showCancel: false
-            });
-        }
-    },
-
-    async handleBatchGenerate() {
-        if (!this.ocrData || this.ocrData.length === 0) {
-             e.index.showToast({ title: "无名单数据", icon: "none" });
-             return;
-        }
-
-        this.stage = "generating";
-        const results = [];
-        const styles = {
-            'encouraging': '温馨鼓励 (Encouraging & Warm)',
-            'strict': '严慈相济 (Strict but Loving)',
-            'humorous': '幽默风趣 (Humorous & Witty)',
-            'philosophical': '富有哲理 (Philosophical)',
-            'creative': '创意新颖 (Creative)'
-        };
-        const stylePrompt = styles[this.batchStyle || 'encouraging'];
-        const wordCount = this.batchWordCount || 50;
-
-        try {
-            // Process students in parallel logic (Promise.all) for speed, or sequential if API rate limited.
-            // Using Promise.all for better UX, assuming Backend Proxy handles concurrency.
-            const promises = this.ocrData.map(async (student) => {
-                const prompt = `R(Role): You are a teacher writing personalized end-of-term comments.\nT(Task): Write a comment for student: ${student.name}.\nData:\n- Observed Behavior/Performance: ${student.text}\n- Teacher's Impression/Keywords: ${this.batchKeywords || 'None'}\n- Role Identity: ${this.batchRole || 'Teacher'}\n- Tone/Style: ${stylePrompt}\n- Length: Around ${wordCount} words.\n\nOutput Requirements:\n- Language: Simplified Chinese.\n- Content: Acknowledge specific behaviors mentioned, provide feedback, and offer future encouragement.\n- Format: Plain text, direct address to the student.`;
-
-                try {
-                    const content = await LLMService.callClaude(prompt);
-                    return { name: student.name, content: content };
-                } catch (err) {
-                    console.error(`Error generating for ${student.name}:`, err);
-                    return { name: student.name, content: "生成失败，请重试。" };
+                    wx.showToast({ title: '读取录音失败', icon: 'none' });
                 }
             });
+        },
 
-            this.batchResults = await Promise.all(promises);
-            this.stage = "batch_result";
+        async processVoiceToText(audioBase64) {
+            try {
+                const prompt = "Transcribe the audio to Simplified Chinese text exactly as spoken. Do not add any commentary.";
+                const text = await LLMService.callGemini(prompt, null, audioBase64);
 
-        } catch (err) {
-            console.error("Batch Gen Error:", err);
-            e.index.showToast({ title: "批量生成出错了", icon: "none" });
-            this.stage = "batch_params"; 
-        }
-    },
-    toggleAdvanced() {
-        this.isAdvancedOpen = !this.isAdvancedOpen;
-    },
-    handleWebRedirect() {
-        e.index.navigateTo({
-            url: `/pages/indievolve/scene_detail?id=${this.sceneId}&targetStage=web_link`
-        })
-    },
-    handleCopyLink() {
-        e.index.setClipboardData({
-            data: "https://xiaoshu.ai/web",
-            success: () => {
-                e.index.showToast({
-                    title: "链接已复制",
-                    icon: "success"
-                })
+                if (text) {
+                    // Populate Quick Gen field
+                    this.singlePerf = (this.singlePerf || "") + text;
+                    this.voiceStep = "idle";
+                    wx.hideLoading();
+                    wx.showToast({ title: '识别成功', icon: 'success' });
+                } else {
+                    throw new Error("Empty transcription");
+                }
+            } catch (err) {
+                console.error("Voice Transcribe Error:", err);
+                wx.hideLoading();
+                this.voiceStep = "idle";
+                wx.showToast({ title: '识别失败', icon: 'none' });
             }
-        })
-    },
-    handleWebTaskComplete() {
-        this.stage = "web_return", this.completeTask(15)
-    },
-    async handleCurriculumGenerate() {
+        },
+        // 4. Handle File Input (Text/Image) - ActionSheet
+        handleFile() {
+            const that = this;
+            wx.showActionSheet({
+                itemList: ['从聊天记录选择文件 (PDF/Word/Excel)', '从相册选择图片'],
+                success(res) {
+                    if (res.tapIndex === 0) {
+                        // Chat Files / Docs
+                        wx.chooseMessageFile({
+                            count: 1,
+                            type: 'file',
+                            extension: ['pdf', 'docx', 'doc', 'xlsx', 'xls', 'txt'],
+                            success(fileRes) {
+                                that.uploadAndParseBatchFile(fileRes.tempFiles[0].path);
+                            }
+                        });
+                    } else if (res.tapIndex === 1) {
+                        // Album Images
+                        wx.chooseMedia({
+                            count: 1,
+                            mediaType: ['image'],
+                            sourceType: ['album'],
+                            success(mediaRes) {
+                                that.readImageAndProcess(mediaRes.tempFiles[0].tempFilePath);
+                            }
+                        });
+                    }
+                },
+                fail(err) {
+                    console.log("ActionSheet Cancelled", err);
+                }
+            });
+        },
+
+        // Helper: Upload & Parse Doc for Batch
+        uploadAndParseBatchFile(filePath) {
+            const that = this;
+            const apiConfig = require('../../config/api.js');
+            wx.showLoading({ title: '正在上传解析...' });
+            console.log("Uploading Doc to:", `${apiConfig.PROXY_URL}/proxy/upload`);
+
+            wx.uploadFile({
+                url: `${apiConfig.PROXY_URL}/proxy/upload`,
+                filePath: filePath,
+                name: 'file',
+                success(uploadRes) {
+                    console.log("Raw Upload Response:", uploadRes.data);
+                    try {
+                        // Check if response is HTML error
+                        if (uploadRes.data && typeof uploadRes.data === 'string' && uploadRes.data.trim().startsWith('<')) {
+                            throw new Error(`Server returned HTML (likely Error): ${uploadRes.data.substring(0, 100)}...`);
+                        }
+                        const data = JSON.parse(uploadRes.data);
+                        if (data.success && data.content) {
+                            console.log("Parsed Doc Content:", data.content.substring(0, 50));
+                            that.processBatchInput(data.content, null, null);
+                        } else {
+                            throw new Error(data.error || 'Parsing Failed');
+                        }
+                    } catch (e) {
+                        console.error("Parse Error:", e);
+                        wx.hideLoading();
+                        wx.showModal({ title: '解析失败', content: '服务器返回数据异常。', showCancel: false });
+                    }
+                },
+                fail(err) {
+                    console.error("Upload Failed:", err);
+                    wx.hideLoading();
+                    wx.showToast({ title: '上传请求失败', icon: 'none' });
+                }
+            });
+        },
+
+        // Helper: Read Image & Process
+        readImageAndProcess(path) {
+            const that = this;
+            wx.showLoading({ title: '读取图片...' });
+            wx.getFileSystemManager().readFile({
+                filePath: path,
+                encoding: 'base64',
+                success: (data) => {
+                    that.processBatchInput(null, null, data.data);
+                },
+                fail: (err) => {
+                    wx.hideLoading();
+                    wx.showToast({ title: '图片读取失败', icon: 'none' });
+                }
+            });
+        },
+
+        // 5. Core: Process Input (Text/Audio/Image) -> JSON List
+        async processBatchInput(text = null, audioBase64 = null, imageBase64 = null) {
+            try {
+                let prompt = "Tasks:\n1. Extract student names and their performance/behavior/keywords from the input.\n2. Output a strictly valid JSON list of objects: [{ \"name\": \"Student Name\", \"text\": \"Performance Content\" }].\n3. Do not include any markdown formatting (like ```json), just the raw JSON string.\n4. If the input contains no valid student data, return an empty list [].";
+
+                if (text) prompt += `\nInput Text: ${text}`;
+                if (audioBase64) prompt = "Listen to the audio. " + prompt;
+                if (imageBase64) prompt = "Analyze the image. " + prompt;
+
+                // Use Gemini for Transcription/Extraction (Fast & Multimodal)
+                const result = await LLMService.callGemini(prompt, imageBase64, audioBase64);
+
+                console.log("Extraction Result:", result);
+
+                // Clean Markdown if present
+                let cleanJson = result.replace(/```json/g, '').replace(/```/g, '').trim();
+                const students = JSON.parse(cleanJson);
+
+                if (Array.isArray(students) && students.length > 0) {
+                    // Determine if we append or replace?
+                    // Let's replace for a clean "OCR Result" state as per unified workflow
+                    this.ocrData = students;
+                    this.isManualBatch = false; // Reset Flag
+                    this.stage = 'batch_ocr_result';
+                    wx.hideLoading();
+                    wx.showToast({ title: '提取成功', icon: 'success' });
+                } else {
+                    throw new Error("No student data found");
+                }
+
+            } catch (err) {
+                console.error("Batch Input Process Error:", err);
+                wx.hideLoading();
+                wx.showModal({
+                    title: "识别失败",
+                    content: "未能提取到学生名单，请重试或检查输入内容。",
+                    showCancel: false
+                });
+            }
+        },
+
+        async handleBatchGenerate() {
+            if (!this.ocrData || this.ocrData.length === 0) {
+                e.index.showToast({ title: "无名单数据", icon: "none" });
+                return;
+            }
+
+            this.stage = "generating";
+            const results = [];
+            const styles = {
+                'encouraging': '温馨鼓励 (Encouraging & Warm)',
+                'strict': '严慈相济 (Strict but Loving)',
+                'humorous': '幽默风趣 (Humorous & Witty)',
+                'philosophical': '富有哲理 (Philosophical)',
+                'creative': '创意新颖 (Creative)'
+            };
+            const stylePrompt = styles[this.batchStyle || 'encouraging'];
+            const wordCount = this.batchWordCount || 50;
+
+            try {
+                // Process students in parallel logic (Promise.all) for speed, or sequential if API rate limited.
+                // Using Promise.all for better UX, assuming Backend Proxy handles concurrency.
+                const promises = this.ocrData.map(async (student) => {
+                    const prompt = `R(Role): You are a teacher writing personalized end-of-term comments.\nT(Task): Write a comment for student: ${student.name}.\nData:\n- Observed Behavior/Performance: ${student.text}\n- Teacher's Impression/Keywords: ${this.batchKeywords || 'None'}\n- Role Identity: ${this.batchRole || 'Teacher'}\n- Tone/Style: ${stylePrompt}\n- Length: Around ${wordCount} words.\n\nOutput Requirements:\n- Language: Simplified Chinese.\n- Content: Acknowledge specific behaviors mentioned, provide feedback, and offer future encouragement.\n- Format: Plain text, direct address to the student.`;
+
+                    try {
+                        const content = await LLMService.callClaude(prompt);
+                        return { name: student.name, content: content };
+                    } catch (err) {
+                        console.error(`Error generating for ${student.name}:`, err);
+                        return { name: student.name, content: "生成失败，请重试。" };
+                    }
+                });
+
+                this.batchResults = await Promise.all(promises);
+                this.stage = "batch_result";
+
+            } catch (err) {
+                console.error("Batch Gen Error:", err);
+                e.index.showToast({ title: "批量生成出错了", icon: "none" });
+                this.stage = "batch_params";
+            }
+        },
+        toggleAdvanced() {
+            this.isAdvancedOpen = !this.isAdvancedOpen;
+        },
+        handleWebRedirect() {
+            e.index.navigateTo({
+                url: `/pages/indievolve/scene_detail?id=${this.sceneId}&targetStage=web_link`
+            })
+        },
+        handleCopyLink() {
+            e.index.setClipboardData({
+                data: "https://xiaoshu.ai/web",
+                success: () => {
+                    e.index.showToast({
+                        title: "链接已复制",
+                        icon: "success"
+                    })
+                }
+            })
+        },
+        handleWebTaskComplete() {
+            this.stage = "web_return", this.completeTask(15)
+        },
+        async handleCurriculumGenerate() {
 
 
-        // 1. Validation
-        // Ensure d is defined before check
-        const d = this.currData || {}; 
-        if (!d.theme) {
-             e.index.showToast({ title: "请输入课程主题", icon: "none" });
-             return;
-        }
+            // 1. Validation
+            // Ensure d is defined before check
+            const d = this.currData || {};
+            if (!d.theme) {
+                e.index.showToast({ title: "请输入课程主题", icon: "none" });
+                return;
+            }
 
-        this.stage = "loading_page"; 
-        wx.pageScrollTo({ scrollTop: 0, duration: 0 });
-        
-        // 2. Construct Prompt (Re-captured from original)
-        const prompt = `R(Role): You are an experienced ${d.subject || 'Education'} curriculum design expert, specializing in developing innovative school-based courses suitable for Chinese high schools, with a deep understanding of resource conditions in county and remote area schools.
+            this.stage = "loading_page";
+            wx.pageScrollTo({ scrollTop: 0, duration: 0 });
+
+            // 2. Construct Prompt (Re-captured from original)
+            const prompt = `R(Role): You are an experienced ${d.subject || 'Education'} curriculum design expert, specializing in developing innovative school-based courses suitable for Chinese high schools, with a deep understanding of resource conditions in county and remote area schools.
 
 T(Task): Please design a school-based course titled "${d.theme}" for a ${d.schoolType || 'High School'}.
 
@@ -2572,130 +2709,130 @@ ensure specific output requirements:
 
 IMPORTANT: Output Language: Simplified Chinese (简体中文). All content must be in Chinese.`;
 
-        try {
-             // TIMEOUT RACE
-            const timeoutPromise = new Promise((_, reject) => 
-                setTimeout(() => reject(new Error("Timeout: LLM took too long")), 90000)
-            );
-            
-            const result = await Promise.race([
-                LLMService.callClaude(prompt),
-                timeoutPromise
-            ]);
+            try {
+                // TIMEOUT RACE
+                const timeoutPromise = new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error("Timeout: LLM took too long")), 90000)
+                );
 
-            console.log("LLM Result in Page:", result?.length, result?.substring(0, 20));
-            
+                const result = await Promise.race([
+                    LLMService.callClaude(prompt),
+                    timeoutPromise
+                ]);
+
+                console.log("LLM Result in Page:", result?.length, result?.substring(0, 20));
 
 
-            // Strategy 1: Vue Reactivity
-            this.currResult = result;
-            this.resultData = {
-                title: d.theme + " 课程方案",
-                fullContent: result,
-                contentBlocks: [{ type: 'p', text: result }]
-            };
-            
-            // Strategy 2: Direct Mutation
-            if (this.resultData) this.resultData.fullContent = result;
 
-            // Strategy 3: Native MP setData (Fallback - Nuclear)
-            const nativePage = this.$scope || this;
-            if (nativePage && typeof nativePage.setData === 'function') {
-                console.log("Forcing native setData update");
-                nativePage.setData({
-                    currResult: result,
-                    'resultData.fullContent': result,
-                    res_debug: (result ? result.length : 0) + ' chars (Native)'
+                // Strategy 1: Vue Reactivity
+                this.currResult = result;
+                this.resultData = {
+                    title: d.theme + " 课程方案",
+                    fullContent: result,
+                    contentBlocks: [{ type: 'p', text: result }]
+                };
+
+                // Strategy 2: Direct Mutation
+                if (this.resultData) this.resultData.fullContent = result;
+
+                // Strategy 3: Native MP setData (Fallback - Nuclear)
+                const nativePage = this.$scope || this;
+                if (nativePage && typeof nativePage.setData === 'function') {
+                    console.log("Forcing native setData update");
+                    nativePage.setData({
+                        currResult: result,
+                        'resultData.fullContent': result,
+                        res_debug: (result ? result.length : 0) + ' chars (Native)'
+                    });
+                }
+
+                e.index.hideLoading();
+                this.stage = "result_page";
+
+            } catch (err) {
+                console.error(err);
+                e.index.hideLoading();
+                // PROBE 2: Error Trap
+                wx.showModal({
+                    title: 'Error Captured',
+                    content: 'Msg: ' + (err.message || JSON.stringify(err)),
+                    showCancel: false
                 });
             }
+        },
 
-            e.index.hideLoading();
-            this.stage = "result_page";
-            
-        } catch (err) {
-            console.error(err);
-            e.index.hideLoading();
-            // PROBE 2: Error Trap
-            wx.showModal({
-                title: 'Error Captured',
-                content: 'Msg: ' + (err.message || JSON.stringify(err)),
-                showCancel: false
+
+
+        // Helper: Parse Markdown to UI Blocks
+        parseMarkdownToBlocks(md) {
+            const lines = md.split('\n');
+            const blocks = [];
+            let listBuffer = [];
+            let h2Index = 0;
+
+            const flushList = () => {
+                if (listBuffer.length > 0) {
+                    blocks.push({ type: 'list', items: [...listBuffer] });
+                    listBuffer = [];
+                }
+            };
+
+            lines.forEach(line => {
+                const trimLine = line.trim();
+                if (!trimLine) return;
+
+                if (trimLine.startsWith('# ')) {
+                    flushList();
+                    blocks.push({ type: 'h1', text: trimLine.replace('# ', '') });
+                } else if (trimLine.startsWith('## ')) {
+                    flushList();
+                    h2Index++;
+                    blocks.push({ type: 'h2', index: h2Index, text: trimLine.replace('## ', '') });
+                } else if (trimLine.startsWith('- ') || trimLine.startsWith('* ') || /^\d+\./.test(trimLine)) {
+                    // List item
+                    listBuffer.push(trimLine.replace(/^[-*\d\.]+\s+/, ''));
+                } else if (trimLine.startsWith('>')) {
+                    flushList();
+                    blocks.push({ type: 'quote', title: 'Note', text: trimLine.replace(/^>\s*/, '') });
+                } else {
+                    // Paragraph
+                    flushList();
+                    // Simple heuristic: if it looks like a key-value pair or short property, maybe treat differently? 
+                    // For now, just paragraph.
+                    blocks.push({ type: 'p', text: trimLine });
+                }
             });
-        }
-    },
+            flushList();
 
-
-
-    // Helper: Parse Markdown to UI Blocks
-    parseMarkdownToBlocks(md) {
-        const lines = md.split('\n');
-        const blocks = [];
-        let listBuffer = [];
-        let h2Index = 0;
-
-        const flushList = () => {
-            if (listBuffer.length > 0) {
-                blocks.push({ type: 'list', items: [...listBuffer] });
-                listBuffer = [];
+            // If no H1 found, add title as H1
+            if (!blocks.find(b => b.type === 'h1')) {
+                blocks.unshift({ type: 'h1', text: this.resultData.title || '课程方案' });
             }
-        };
 
-        lines.forEach(line => {
-            const trimLine = line.trim();
-            if (!trimLine) return;
-
-            if (trimLine.startsWith('# ')) {
-                flushList();
-                blocks.push({ type: 'h1', text: trimLine.replace('# ', '') });
-            } else if (trimLine.startsWith('## ')) {
-                flushList();
-                h2Index++;
-                blocks.push({ type: 'h2', index: h2Index, text: trimLine.replace('## ', '') });
-            } else if (trimLine.startsWith('- ') || trimLine.startsWith('* ') || /^\d+\./.test(trimLine)) {
-                // List item
-                listBuffer.push(trimLine.replace(/^[-*\d\.]+\s+/, ''));
-            } else if (trimLine.startsWith('>')) {
-                 flushList();
-                 blocks.push({ type: 'quote', title: 'Note', text: trimLine.replace(/^>\s*/, '') });
-            } else {
-                // Paragraph
-                flushList();
-                // Simple heuristic: if it looks like a key-value pair or short property, maybe treat differently? 
-                // For now, just paragraph.
-                blocks.push({ type: 'p', text: trimLine });
+            return blocks;
+        },
+        resetCurriculum() {
+            this.currResult = "", this.stage = "curriculum_input"
+        },
+        handleVoiceClick() {
+            if (this.voiceStep === "idle") {
+                this.voiceStep = "recording";
+                this.handleVoiceStart();
+            } else if (this.voiceStep === "recording") {
+                this.voiceStep = "processing";
+                this.handleVoiceEnd();
             }
-        });
-        flushList();
-        
-        // If no H1 found, add title as H1
-        if (!blocks.find(b => b.type === 'h1')) {
-            blocks.unshift({ type: 'h1', text: this.resultData.title || '课程方案' });
-        }
+        },
+        async handleQuickGenerate() {
+            if (!this.singleName || !this.singlePerf) {
+                e.index.showToast({ title: "请填写姓名和表现", icon: "none" });
+                return;
+            }
 
-        return blocks;
-    },
-    resetCurriculum() {
-        this.currResult = "", this.stage = "curriculum_input"
-    },
-    handleVoiceClick() {
-        if (this.voiceStep === "idle") {
-            this.voiceStep = "recording";
-            this.handleVoiceStart();
-        } else if (this.voiceStep === "recording") {
-            this.voiceStep = "processing";
-            this.handleVoiceEnd();
-        }
-    },
-    async handleQuickGenerate() {
-        if (!this.singleName || !this.singlePerf) {
-             e.index.showToast({ title: "请填写姓名和表现", icon: "none" });
-             return;
-        }
+            this.isGeneratingSingle = true;
 
-        this.isGeneratingSingle = true;
-        
-        try {
-            const prompt = `R(Role): You are a warm and encouraging teacher.
+            try {
+                const prompt = `R(Role): You are a warm and encouraging teacher.
 T(Task): Write a personalized comment for student ${this.singleName}.
 Data:
 - Performance/Observed Behavior: ${this.singlePerf}
@@ -2704,93 +2841,93 @@ Data:
 
 Output specific comment in Simplified Chinese directly.`;
 
-            const result = await LLMService.callClaude(prompt);
-            
-            if (!result) throw new Error("Empty response");
+                const result = await LLMService.callClaude(prompt);
 
-            this.isGeneratingSingle = false;
-            // Save to storage to avoid URL length limits
-            console.log("DEBUG: Saving to storage", { name: this.singleName, perf: this.singlePerf, result: result });
-            wx.setStorageSync('fast_mode_data', {
-                name: this.singleName,
-                perf: this.singlePerf,
-                result: result
-            });
+                if (!result) throw new Error("Empty response");
 
-            console.log("DEBUG: Navigating to quick_result (Local Switch)");
-            // Direct State Switch (Bypass Navigation)
-            this.singleName = this.singleName;
-            this.singlePerf = this.singlePerf;
-            this.singleResult = result;
-            
-            this.setStage('quick_result');
-            this.setData({
-                singleResult: result,
-                QUICK_RESULT: true
-            });
+                this.isGeneratingSingle = false;
+                // Save to storage to avoid URL length limits
+                console.log("DEBUG: Saving to storage", { name: this.singleName, perf: this.singlePerf, result: result });
+                wx.setStorageSync('fast_mode_data', {
+                    name: this.singleName,
+                    perf: this.singlePerf,
+                    result: result
+                });
+
+                console.log("DEBUG: Navigating to quick_result (Local Switch)");
+                // Direct State Switch (Bypass Navigation)
+                this.singleName = this.singleName;
+                this.singlePerf = this.singlePerf;
+                this.singleResult = result;
+
+                this.setStage('quick_result');
+                this.setData({
+                    singleResult: result,
+                    QUICK_RESULT: true
+                });
+                wx.pageScrollTo({ scrollTop: 0, duration: 0 });
+
+            } catch (err) {
+                console.error("Quick Gen Error:", err);
+                this.isGeneratingSingle = false;
+                e.index.showToast({ title: "生成失败", icon: "none" });
+            }
+        },
+        resetQuick() {
+            e.index.navigateBack();
+        },
+        copyAndFinish() {
+            e.index.setClipboardData({
+                data: this.singleResult,
+                success: () => {
+                    e.index.showToast({
+                        title: "已复制",
+                        icon: "success"
+                    });
+                    setTimeout(() => {
+                        e.index.navigateBack({ delta: 2 });
+                    }, 500)
+                }
+            })
+        },
+        runBatchProcess() {
+            this.handleBatchMode();
+        },
+        handleStartCamera() {
+            this.stage = "camera_guide"
+        },
+        handleCapture() {
+            e.index.showLoading({
+                title: "相机启动中..."
+            }), setTimeout((() => {
+                e.index.hideLoading(), this.stage = "generating", setTimeout((() => {
+                    this.results = [{
+                        name: "李明",
+                        comment: "表现不错..."
+                    }, {
+                        name: "韩梅梅",
+                        comment: "英语很好..."
+                    }], this.stage = "result", this.completeTask(10)
+                }), 2e3)
+            }), 1e3)
+        },
+        completeTask(e) {
+            this.$store.commit("completeTask", {
+                bonusExp: e
+            })
+        },
+        async handlePBLGenerate() {
+            const d = this.pblData;
+            if (!d.theme || !d.subject) {
+                e.index.showToast({ title: "请至少填写主题和学科", icon: "none" });
+                return;
+            }
+
+            this.stage = "loading_page";
             wx.pageScrollTo({ scrollTop: 0, duration: 0 });
 
-        } catch (err) {
-            console.error("Quick Gen Error:", err);
-            this.isGeneratingSingle = false;
-            e.index.showToast({ title: "生成失败", icon: "none" });
-        }
-    },
-    resetQuick() {
-        e.index.navigateBack();
-    },
-    copyAndFinish() {
-        e.index.setClipboardData({
-            data: this.singleResult,
-            success: () => {
-                e.index.showToast({
-                    title: "已复制",
-                    icon: "success"
-                });
-                setTimeout(() => {
-                    e.index.navigateBack({ delta: 2 });
-                }, 500)
-            }
-        })
-    },
-    runBatchProcess() {
-        this.handleBatchMode();
-    },
-    handleStartCamera() {
-        this.stage = "camera_guide"
-    },
-    handleCapture() {
-        e.index.showLoading({
-            title: "相机启动中..."
-        }), setTimeout((() => {
-            e.index.hideLoading(), this.stage = "generating", setTimeout((() => {
-                this.results = [{
-                    name: "李明",
-                    comment: "表现不错..."
-                }, {
-                    name: "韩梅梅",
-                    comment: "英语很好..."
-                }], this.stage = "result", this.completeTask(10)
-            }), 2e3)
-        }), 1e3)
-    },
-    completeTask(e) {
-        this.$store.commit("completeTask", {
-            bonusExp: e
-        })
-    },
-    async handlePBLGenerate() {
-        const d = this.pblData;
-        if (!d.theme || !d.subject) {
-            e.index.showToast({ title: "请至少填写主题和学科", icon: "none" });
-            return;
-        }
-
-        this.stage = "loading_page";
-        wx.pageScrollTo({ scrollTop: 0, duration: 0 });
-
-        try {
-            const prompt = `R(Role): You are an experienced ${d.subject} teacher, specializing in designing Project-Based Learning (PBL) courses.
+            try {
+                const prompt = `R(Role): You are an experienced ${d.subject} teacher, specializing in designing Project-Based Learning (PBL) courses.
 
 T(Task): Design a ${d.duration || '4-week'} PBL course for ${d.grade || 'High School'} students.
 
@@ -2828,60 +2965,60 @@ Please output in structure:
 Output in Markdown. Use H1 (#) for Title, H2 (##) for Sections.
 IMPORTANT: Output Language: Simplified Chinese (简体中文). All content must be in Chinese.`;
 
-            // TIMEOUT RACE
-            const timeoutPromise = new Promise((_, reject) => 
-                setTimeout(() => reject(new Error("Timeout: LLM took too long")), 90000)
-            );
-            
-            // Call Claude (via OpenRouter)
-            const content = await Promise.race([
-                LLMService.callClaude(prompt),
-                timeoutPromise
-            ]);
+                // TIMEOUT RACE
+                const timeoutPromise = new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error("Timeout: LLM took too long")), 90000)
+                );
 
-            if (!content) throw new Error("Empty response");
+                // Call Claude (via OpenRouter)
+                const content = await Promise.race([
+                    LLMService.callClaude(prompt),
+                    timeoutPromise
+                ]);
 
-            const blocks = this.parseMarkdownToBlocks(content);
-            
-            // Strategy 1: Vue Reactivity
-            this.resultData = {
-                title: d.theme + " - PBL方案",
-                contentBlocks: blocks,
-                fullContent: content
-            };
-            this.currResult = content;
+                if (!content) throw new Error("Empty response");
 
-            // Strategy 3: Native MP setData (Fallback)
-            const nativePage = this.$scope || this;
-            if (nativePage && typeof nativePage.setData === 'function') {
-                console.log("Forcing native setData update (PBL)");
-                 nativePage.setData({
-                     'resultData.title': d.theme + " - PBL方案",
-                     'resultData.contentBlocks': blocks,
-                     'resultData.fullContent': content,
-                     res_debug: (content ? content.length : 0) + ' chars (Native)'
-                 });
+                const blocks = this.parseMarkdownToBlocks(content);
+
+                // Strategy 1: Vue Reactivity
+                this.resultData = {
+                    title: d.theme + " - PBL方案",
+                    contentBlocks: blocks,
+                    fullContent: content
+                };
+                this.currResult = content;
+
+                // Strategy 3: Native MP setData (Fallback)
+                const nativePage = this.$scope || this;
+                if (nativePage && typeof nativePage.setData === 'function') {
+                    console.log("Forcing native setData update (PBL)");
+                    nativePage.setData({
+                        'resultData.title': d.theme + " - PBL方案",
+                        'resultData.contentBlocks': blocks,
+                        'resultData.fullContent': content,
+                        res_debug: (content ? content.length : 0) + ' chars (Native)'
+                    });
+                }
+
+                this.stage = "result_page";
+                wx.pageScrollTo({ scrollTop: 0, duration: 0 });
+                this.completeTask(20);
+
+            } catch (err) {
+                console.error("PBL Gen Error:", err);
+                // e.index.hideLoading(); 
+                wx.showModal({
+                    title: '生成失败',
+                    content: '原因: ' + (err.message || '未知错误'),
+                    showCancel: false
+                });
             }
-            
-            this.stage = "result_page"; 
-            wx.pageScrollTo({ scrollTop: 0, duration: 0 });
-            this.completeTask(20);
-
-        } catch (err) {
-            console.error("PBL Gen Error:", err);
-            // e.index.hideLoading(); 
-            wx.showModal({
-                title: '生成失败',
-                content: '原因: ' + (err.message || '未知错误'),
-                showCancel: false
-            });
-        }
             this.stage = "pbl_input";
         }
     },
     async handleLessonPlanGenerate() {
         this.stage = "loading_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
-        
+
         try {
             const d = this.lessonPlanData || {};
             const prompt = `R(Role): Expert Teacher.
@@ -2979,8 +3116,8 @@ Language: Simplified Chinese.`;
                 title: d.name + " - 社团课程方案",
                 contentBlocks: blocks
             };
-            
-            this.stage = "result_page"; 
+
+            this.stage = "result_page";
             wx.pageScrollTo({ scrollTop: 0, duration: 0 });
             this.completeTask(20);
 
@@ -2992,7 +3129,7 @@ Language: Simplified Chinese.`;
     },
     async handleSelectionGenerate() {
         const d = this.selectionData;
-        
+
         // Validation
         if (!d.province || !d.school || !d.scores) {
             e.index.showToast({ title: "请填写必填项(省份,学校,成绩)", icon: "none" });
@@ -3059,8 +3196,8 @@ Language: Simplified Chinese.`;
                 title: (d.studentName || "学生") + " - 选科指导",
                 contentBlocks: blocks
             };
-            
-            this.stage = "result_page"; 
+
+            this.stage = "result_page";
             wx.pageScrollTo({ scrollTop: 0, duration: 0 });
             this.completeTask(20);
 
@@ -3128,8 +3265,8 @@ Language: Simplified Chinese.`;
                 title: "心理辅导建议",
                 contentBlocks: blocks
             };
-            
-            this.stage = "result_page"; 
+
+            this.stage = "result_page";
             wx.pageScrollTo({ scrollTop: 0, duration: 0 });
             this.completeTask(20);
 
@@ -3195,8 +3332,8 @@ Language: Simplified Chinese.`;
                 title: "矛盾处理方案",
                 contentBlocks: blocks
             };
-            
-            this.stage = "result_page"; 
+
+            this.stage = "result_page";
             wx.pageScrollTo({ scrollTop: 0, duration: 0 });
             this.completeTask(20);
 
@@ -3262,8 +3399,8 @@ Language: Simplified Chinese.`;
                 title: "课题思路生成",
                 contentBlocks: blocks
             };
-            
-            this.stage = "result_page"; 
+
+            this.stage = "result_page";
             wx.pageScrollTo({ scrollTop: 0, duration: 0 });
             this.completeTask(20);
 
@@ -3322,15 +3459,15 @@ Language: Simplified Chinese.`;
                 title: "文献综述/前沿分析",
                 contentBlocks: blocks
             };
-            
-            this.stage = "result_page"; 
+
+            this.stage = "result_page";
             wx.pageScrollTo({ scrollTop: 0, duration: 0 });
             this.completeTask(20);
 
         } catch (err) {
             console.error("RP Review Gen Error:", err);
             e.index.showToast({ title: "生成失败，请重试", icon: "none" });
-            this.stage = "research_paper"; 
+            this.stage = "research_paper";
         }
     },
     async generateRPMethod() {
@@ -3403,15 +3540,15 @@ Language: Simplified Chinese.`;
                 title: "研究方法设计",
                 contentBlocks: blocks
             };
-            
-            this.stage = "result_page"; 
+
+            this.stage = "result_page";
             wx.pageScrollTo({ scrollTop: 0, duration: 0 });
             this.completeTask(20);
 
         } catch (err) {
             console.error("RP Method Gen Error:", err);
             e.index.showToast({ title: "生成失败，请重试", icon: "none" });
-            this.stage = "research_paper"; 
+            this.stage = "research_paper";
         }
     },
     rp_data_upload() {
@@ -3430,10 +3567,10 @@ Language: Simplified Chinese.`;
 
     async generateRPData() {
         const d = this.rpDataData;
-        
+
         if (!d.file) {
-             e.index.showToast({ title: "请先选择数据文件", icon: "none" });
-             return;
+            e.index.showToast({ title: "请先选择数据文件", icon: "none" });
+            return;
         }
 
         this.stage = "loading_page";
@@ -3494,15 +3631,15 @@ Language: Simplified Chinese.`;
                 title: "数据分析报告",
                 contentBlocks: blocks
             };
-            
-            this.stage = "result_page"; 
+
+            this.stage = "result_page";
             wx.pageScrollTo({ scrollTop: 0, duration: 0 });
             this.completeTask(20);
 
         } catch (err) {
             console.error("RP Data Gen Error:", err);
             e.index.showToast({ title: "生成失败，请重试", icon: "none" });
-            this.stage = "research_paper"; 
+            this.stage = "research_paper";
         }
     },
     async generateRPFramework() {
@@ -3578,20 +3715,20 @@ Language: Simplified Chinese.`;
                 title: "论文框架建议",
                 contentBlocks: blocks
             };
-            
-            this.stage = "result_page"; 
+
+            this.stage = "result_page";
             wx.pageScrollTo({ scrollTop: 0, duration: 0 });
             this.completeTask(20);
 
         } catch (err) {
             console.error("RP Framework Gen Error:", err);
             e.index.showToast({ title: "生成失败，请重试", icon: "none" });
-            this.stage = "research_paper"; 
+            this.stage = "research_paper";
         }
     },
 
     // Navigation Handlers for Solution Modules
-    
+
     // --- Research Paper Legacy Bridge ---
     rp_generate() { this.generateRPTopic(); },
     rp_rev_generate() { this.generateRPReview(); },
@@ -3622,10 +3759,10 @@ Language: Simplified Chinese.`;
     handleAnalysisType(e) {
         this.analysisData.inputType = e.currentTarget.dataset.val;
     },
-    
+
     async handleAnalysisGenerate() {
         const d = this.analysisData;
-        
+
         // Basic Validation
         if (!d.subject) {
             e.index.showToast({ title: "请填写学科", icon: "none" });
@@ -3638,9 +3775,9 @@ Language: Simplified Chinese.`;
         const standard = d.standard || '（用户未提供，请基于最新课标）';
         const content = d.content || d.textbookInfo || '（用户未提供具体内容）';
         const scene = d.scene === 'multimedia' ? '多媒体教室（有投影仪/PPT）' :
-                      d.scene === 'lab' ? '实验室（有实验器材）' :
-                      d.scene === 'board' ? '纯板书教室（只有黑板粉笔）' :
-                      '普通教室（有黑板，可打印学案）';
+            d.scene === 'lab' ? '实验室（有实验器材）' :
+                d.scene === 'board' ? '纯板书教室（只有黑板粉笔）' :
+                    '普通教室（有黑板，可打印学案）';
 
         this.stage = "loading_page";
         wx.pageScrollTo({ scrollTop: 0, duration: 0 });
@@ -3745,8 +3882,8 @@ F (输出格式)：
                 title: "教材深度剖析报告",
                 contentBlocks: blocks
             };
-            
-            this.stage = "result_page"; 
+
+            this.stage = "result_page";
             wx.pageScrollTo({ scrollTop: 0, duration: 0 });
             this.completeTask(50); // XP Reward
             this.addToHistory("深度剖析: " + d.subject, content);
@@ -3754,7 +3891,7 @@ F (输出格式)：
         } catch (err) {
             console.error("Deep Analysis Gen Error:", err);
             e.index.showToast({ title: "生成失败，请重试", icon: "none" });
-            this.stage = "analysis_input"; 
+            this.stage = "analysis_input";
         }
     },
     handleLessonPlanType(e) { this.lessonPlanData.lessonType = e.currentTarget.dataset.val; },
@@ -3797,7 +3934,7 @@ F (输出格式)：
     pl_onHighlights(e) { this.plDesignData.highlights = e.detail.value; },
     pl_onPhilosophy(e) { this.plDesignData.philosophy = e.detail.value; },
     pl_onTools(e) { this.plDesignData.tools = e.detail.value; },
-    
+
     // --- Solution Tools Menu Handlers ---
 
 
@@ -3808,7 +3945,7 @@ F (输出格式)：
     sa_onGs(e) { this.saData.gradeSubject = e.detail.value; },
     sa_setLevel(e) { this.saData.level = e.currentTarget.dataset.val; },
     sa_setScene(e) { this.saData.scene = e.currentTarget.dataset.val; },
-    
+
     sa_upload() {
         this.handleCommonUpload('saData');
     },
@@ -3817,7 +3954,7 @@ F (输出格式)：
         let finalContent = data.content;
         let imageBase64 = data.attachedImage;
         if (data.attachedText && (!finalContent || finalContent.startsWith('[已'))) {
-             finalContent = data.attachedText;
+            finalContent = data.attachedText;
         }
 
         if (!finalContent && !imageBase64) {
@@ -3825,8 +3962,8 @@ F (输出格式)：
             return;
         }
         if (!data.gradeSubject) {
-             e.index.showToast({ title: "请填写年级和学科", icon: "none" });
-             return;
+            e.index.showToast({ title: "请填写年级和学科", icon: "none" });
+            return;
         }
 
         const prompt = `
@@ -3877,7 +4014,7 @@ F (输出格式)：
 - 口头强调：【给学生的一句话提醒，如"同学们注意，这里摩擦力做的是负功！"】
 - 课后练习题：【直接给出1-2道类似题目+完整答案，用于巩固】
 `;
-        
+
         e.index.showLoading({ title: "正在解题..." });
         try {
             const result = await LLMService.callClaude(prompt, undefined, imageBase64);
@@ -3888,7 +4025,7 @@ F (输出格式)：
                 ]
             };
             e.index.hideLoading();
-            this.stage = "result_page"; 
+            this.stage = "result_page";
             wx.pageScrollTo({ scrollTop: 0, duration: 0 });
             this.completeTask(10);
             this.addToHistory("标准答案", result);
@@ -3905,13 +4042,13 @@ F (输出格式)：
 
     pl_setLevel(e) { this.plDesignData.level = e.currentTarget.dataset.val; },
     pl_setDuration(e) { this.plDesignData.duration = e.currentTarget.dataset.val; },
-    
+
     async pl_generate() {
         const data = this.plDesignData;
-        
+
         // Allow generation if file/image is uploaded even if some text fields are missing (flexible check)
         // usage: data.content might be "[Uploaded File]"
-        
+
         let finalContent = data.content;
         let imageBase64 = data.attachedImage;
         if (data.attachedText) finalContent = data.attachedText;
@@ -3967,7 +4104,7 @@ Language: Simplified Chinese.`;
                 ]
             };
             e.index.hideLoading();
-            this.stage = "result_page"; 
+            this.stage = "result_page";
             wx.pageScrollTo({ scrollTop: 0, duration: 0 });
             this.completeTask(30);
             this.addToHistory("公开课设计: " + data.topic, result);
@@ -3998,7 +4135,7 @@ Language: Simplified Chinese.`;
 
     async generateLectureManuscript() {
         const data = this.plLectureData;
-        
+
         let finalContent = data.designContent;
         let imageBase64 = data.attachedImage;
         if (data.attachedText) finalContent = data.attachedText;
@@ -4085,7 +4222,7 @@ F（输出格式）：
                 ]
             };
             e.index.hideLoading();
-            this.stage = "result_page"; 
+            this.stage = "result_page";
             wx.pageScrollTo({ scrollTop: 0, duration: 0 });
         } catch (error) {
             console.error(error);
@@ -4140,7 +4277,7 @@ F（输出格式）：
         // Pre-fill data from Step 01 if available
         if (this.rpTopicData.subject) this.rpReviewData.subject = this.rpTopicData.subject;
         if (this.rpTopicData.topic) this.rpReviewData.topic = this.rpTopicData.topic;
-        
+
         wx.navigateTo({
             url: `/pages/indievolve/scene_detail?id=${this.sceneId}&targetStage=rp_review_input`
         });
@@ -4163,7 +4300,7 @@ F（输出格式）：
         this.modalTriggerField = 'rp_topic';
         this.showAnalysisModal = true;
         this.isHistoryMode = false;
-        
+
         // Mock updating specific result content for RP
         // In real app, fetch from backend or separate store
     },
@@ -4236,11 +4373,11 @@ F（输出格式）：
         // or we could store `lastStage` in data.
         // A simpler way for this demo is to just go back to the guide list or specific input.
         // Let's go back to the specific input stage for RP Framework.
-        this.setData({ stage: "rp_framework_input" }); 
+        this.setData({ stage: "rp_framework_input" });
     },
     handleResultCopy() {
         wx.setClipboardData({
-                        // Mock content removed
+            // Mock content removed
             success: () => wx.showToast({ title: "复制成功" })
         });
     },
@@ -4259,11 +4396,11 @@ F（输出格式）：
 
 
     handleViewAnalysisHistory(e) {
-         if (e && e.currentTarget.dataset.field) {
-             this.modalTriggerField = e.currentTarget.dataset.field;
-         }
-         this.showAnalysisModal = true;
-         this.isHistoryMode = false;
+        if (e && e.currentTarget.dataset.field) {
+            this.modalTriggerField = e.currentTarget.dataset.field;
+        }
+        this.showAnalysisModal = true;
+        this.isHistoryMode = false;
     },
     handleCloseModal() {
         this.showAnalysisModal = false;
@@ -4275,7 +4412,7 @@ F（输出格式）：
     handleSelectHistoryItem(e) {
         const id = e.currentTarget.dataset.id;
         const item = this.analysisHistory.find(i => i.id == id);
-        
+
         if (item && item.result) {
             const res = item.result;
             // Map based on trigger field
@@ -4286,13 +4423,13 @@ F（输出格式）：
                 // Let's just fill the main content text area if applicable, or show toast.
                 this.rpTopicData.topic = res.substring(0, 50) + "..."; // Mock behavior for complex object
                 wx.showToast({ title: "已引用(需手动整理)", icon: "none" });
-            } 
+            }
             else if (this.modalTriggerField === 'design_kp') { this.designData.kpContent = res; }
             else if (this.modalTriggerField === 'ppt_content') { this.pptData.content = res; }
             else if (this.modalTriggerField === 'ppt_kp') { this.pptData.keyPoints = res; }
             else if (this.modalTriggerField === 'pl_content') { this.plDesignData.content = res; } // Added for PL
             else if (this.modalTriggerField === 'pl_lec_content') { this.plLectureData.designContent = res; } // Added for PL Lec
-            
+
             this.isHistoryMode = false;
         }
     },
@@ -4312,7 +4449,7 @@ F（输出格式）：
         this.analysisData.scene = event.currentTarget.dataset.val;
     },
 
-    
+
     // --- Unified Generation Handlers for Other Scenes ---
     // PPT Handler removed (was duplicate overwriting detailed one)
     async handleStdGenerate() {
@@ -4325,11 +4462,11 @@ F（输出格式）：
             finalContent = d.attachedText;
         }
 
-        if (!finalContent && !imageBase64) { 
-            wx.showToast({ title: "请输入题目或上传文件", icon: "none" }); 
-            return; 
+        if (!finalContent && !imageBase64) {
+            wx.showToast({ title: "请输入题目或上传文件", icon: "none" });
+            return;
         }
-        
+
         this.stage = "loading_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
         try {
             const prompt = `R (Role): You are an expert High School Teacher, skilled in providing standard, step-by-step solutions.
@@ -4349,17 +4486,17 @@ F (Output Format):
 4. Teaching Tip (One sentence for the student)
 
 Language: Simplified Chinese.`;
-            
+
             // Pass imageBase64 to LLMService
             const content = await LLMService.callClaude(prompt, undefined, imageBase64);
-            
+
             this.resultData = { title: "标准解答", contentBlocks: this.parseMarkdownToBlocks(content) };
             this.stage = "result_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
             this.completeTask(10);
-        } catch(e) { 
+        } catch (e) {
             console.error(e);
-            this.stage = "standard_answer_input"; 
-            wx.showToast({ title: "生成失败", icon:"none" }); 
+            this.stage = "standard_answer_input";
+            wx.showToast({ title: "生成失败", icon: "none" });
         }
     },
     handleKeyPointsUpload() { this.handleCommonUpload('keyPointsData'); },
@@ -4374,7 +4511,7 @@ Language: Simplified Chinese.`;
 
         this.stage = "loading_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
         try {
-             const prompt = `R: Expert Teacher. 
+            const prompt = `R: Expert Teacher. 
 T: Analyze key points (Knowledge & Ability) and Difficulties for: ${imageBase64 ? '[Image Uploaded]' : finalContent}.
 Student Confusion: ${d.confusion || 'None provided'}.
 
@@ -4385,15 +4522,15 @@ F: Markdown.
 4. Breakdown Strategy (How to solve step-by-step)
 
 Language: Simplified Chinese.`;
-             const content = await LLMService.callClaude(prompt, undefined, imageBase64);
-             this.resultData = { title: "重难点解析", contentBlocks: this.parseMarkdownToBlocks(content) };
-             this.stage = "result_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
-             this.completeTask(10);
-             this.addToHistory("重难点解析", content);
-        } catch(e) {  
+            const content = await LLMService.callClaude(prompt, undefined, imageBase64);
+            this.resultData = { title: "重难点解析", contentBlocks: this.parseMarkdownToBlocks(content) };
+            this.stage = "result_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
+            this.completeTask(10);
+            this.addToHistory("重难点解析", content);
+        } catch (e) {
             console.error(e);
-            this.stage = "key_points_input"; 
-            wx.showToast({ title: "生成失败", icon:"none" }); 
+            this.stage = "key_points_input";
+            wx.showToast({ title: "生成失败", icon: "none" });
         }
     },
     handleMultiSolUpload() { this.handleCommonUpload('multiSolData'); },
@@ -4405,10 +4542,10 @@ Language: Simplified Chinese.`;
         if (d.attachedText) finalContent = d.attachedText;
 
         if (!finalContent && !imageBase64) { wx.showToast({ title: "请输入题目", icon: "none" }); return; }
-        
+
         this.stage = "loading_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
         try {
-             const prompt = `R: Expert Math/Science Teacher. 
+            const prompt = `R: Expert Math/Science Teacher. 
 T: Provide multiple solution methods for: ${imageBase64 ? '[Image Uploaded]' : finalContent}.
 Context: ${d.gradeSubject || ''}. Situation: ${d.classSituation || ''}. Need: ${d.need || ''}.
 
@@ -4419,14 +4556,14 @@ Requirements:
 - Compare the methods (Pros/Cons).
 
 F: Markdown. Language: Simplified Chinese.`;
-             const content = await LLMService.callClaude(prompt, undefined, imageBase64);
-             this.resultData = { title: "一题多解", contentBlocks: this.parseMarkdownToBlocks(content) };
-             this.stage = "result_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
-             this.completeTask(10);
-        } catch(e) { 
+            const content = await LLMService.callClaude(prompt, undefined, imageBase64);
+            this.resultData = { title: "一题多解", contentBlocks: this.parseMarkdownToBlocks(content) };
+            this.stage = "result_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
+            this.completeTask(10);
+        } catch (e) {
             console.error(e);
-            this.stage = "multiple_solutions_input"; 
-            wx.showToast({ title: "生成失败", icon:"none" }); 
+            this.stage = "multiple_solutions_input";
+            wx.showToast({ title: "生成失败", icon: "none" });
         }
     },
     handleVariationUpload() { this.handleCommonUpload('variationData'); },
@@ -4434,10 +4571,10 @@ F: Markdown. Language: Simplified Chinese.`;
         const d = this.mistakeData || {};
         const q = d.content || this.solutionData.content;
         if (!q) { wx.showToast({ title: "请输入题目", icon: "none" }); return; }
-        
+
         this.stage = "loading_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
         try {
-             const prompt = `R: Expert Teacher. 
+            const prompt = `R: Expert Teacher. 
 T: Analyze common mistakes for: ${q}.
 Error Type: ${d.errorType || 'Concept'}. Typical Errors: ${d.typicalErrors || 'None'}.
 
@@ -4447,14 +4584,14 @@ Task:
 3. Generate 1 Similar Problem (for practice) with Answer.
 
 F: Markdown. Language: Simplified Chinese.`;
-             const content = await LLMService.callClaude(prompt);
-             this.resultData = { title: "错题举一反三", contentBlocks: this.parseMarkdownToBlocks(content) };
-             this.stage = "result_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
-             this.completeTask(10);
-        } catch(e) { 
+            const content = await LLMService.callClaude(prompt);
+            this.resultData = { title: "错题举一反三", contentBlocks: this.parseMarkdownToBlocks(content) };
+            this.stage = "result_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
+            this.completeTask(10);
+        } catch (e) {
             console.error(e);
-            this.stage = "mistake_training_input"; 
-            wx.showToast({ title: "生成失败", icon:"none" }); 
+            this.stage = "mistake_training_input";
+            wx.showToast({ title: "生成失败", icon: "none" });
         }
     },
     async handleVariationGenerate() {
@@ -4465,10 +4602,10 @@ F: Markdown. Language: Simplified Chinese.`;
         if (d.attachedText) finalContent = d.attachedText;
 
         if (!finalContent && !imageBase64) { wx.showToast({ title: "请输入题目", icon: "none" }); return; }
-        
+
         this.stage = "loading_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
         try {
-             const prompt = `R: Expert Teacher. 
+            const prompt = `R: Expert Teacher. 
 T: Design variation problems for: ${imageBase64 ? '[Image Uploaded]' : finalContent}.
 Goal: ${d.goalAchieve || 'Deepen understanding'}.
 Requirement: ${d.requirement || 'Change Conditions'}.
@@ -4480,28 +4617,28 @@ Task:
 Provide Answers for all.
 
 F: Markdown. Language: Simplified Chinese.`;
-             const content = await LLMService.callClaude(prompt, undefined, imageBase64);
-             this.resultData = { title: "变式与拓展", contentBlocks: this.parseMarkdownToBlocks(content) };
-             this.stage = "result_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
-             this.completeTask(10);
-        } catch(e) { 
+            const content = await LLMService.callClaude(prompt, undefined, imageBase64);
+            this.resultData = { title: "变式与拓展", contentBlocks: this.parseMarkdownToBlocks(content) };
+            this.stage = "result_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
+            this.completeTask(10);
+        } catch (e) {
             console.error(e);
-            this.stage = "variation_input"; 
-            wx.showToast({ title: "生成失败", icon:"none" }); 
+            this.stage = "variation_input";
+            wx.showToast({ title: "生成失败", icon: "none" });
         }
     },
     handlePaperUpload() { this.handleCommonUpload('paperData'); },
     async handlePaperGenerate() {
         const data = this.paperData;
         let finalContent = data.content;
-        
+
         if (data.attachedText) finalContent = data.attachedText;
 
         if (!finalContent && !data.file) { // data.file is legacy, attachedText is new
-             if (!data.attachedImage) {
-                 wx.showToast({ title: "请提供试卷 content", icon: "none" });
-                 return;
-             }
+            if (!data.attachedImage) {
+                wx.showToast({ title: "请提供试卷 content", icon: "none" });
+                return;
+            }
         }
 
         const prompt = `
@@ -4603,19 +4740,19 @@ F (输出格式)：
 `;
 
         this.stage = "loading_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
-        
+
         try {
             const result = await LLMService.callClaude(prompt, undefined, data.attachedImage);
-            
+
             // Parse result (simple split for demo, or keep as one block if structured)
             // Ideally detailed parsing like splitting by headers, but for now we put it all in one or split by sections.
             // Let's try to split meaningfully if possible, or just wrap in p (Gemini output is usually markdown).
-            
+
             this.resultData = {
                 title: "试卷质量评估报告",
                 contentBlocks: [
                     { type: 'h1', text: data.name || '评估结果' },
-                     // Simple Markdown Rendering Handling
+                    // Simple Markdown Rendering Handling
                     { type: 'p', text: result }
                 ]
             };
@@ -4630,7 +4767,7 @@ F (输出格式)：
                 content: error.message || "请稍后重试",
                 showCancel: false,
                 success: () => {
-                   this.stage = "paper_assess_input";  // Go back
+                    this.stage = "paper_assess_input";  // Go back
                 }
             });
         }
@@ -4662,13 +4799,13 @@ F (输出格式)：
 
     async _callRefineAPI(instruction) {
         if (!this.resultData || !this.resultData.contentBlocks) return;
-        
+
         e.index.showLoading({ title: "正在优化..." });
-        
+
         // Extract current text content
         const currentText = this.resultData.contentBlocks.map(b => {
-             if (b.type === 'list') return b.items.map(i => '- ' + i).join('\n');
-             return b.text;
+            if (b.type === 'list') return b.items.map(i => '- ' + i).join('\n');
+            return b.text;
         }).join('\n\n');
 
         const prompt = `
@@ -4686,17 +4823,17 @@ Please rewrite the content based on the instruction. Maintain the structured for
             // Ideally, we should parse 'result' to blocks again. 
             // Here we assume result is markdown-like and use a simple P block or attempt to basic parse if possible.
             // For now, we will just display it as paragraphs to ensure it works.
-            
+
             this.resultData = {
                 title: this.resultData.title, // Keep title
                 contentBlocks: [
-                    { type: 'p', text: result } 
+                    { type: 'p', text: result }
                 ]
             };
             this.stage = "result_page"; // Force refresh if needed, though data binding should handle it
             wx.pageScrollTo({ scrollTop: 0, duration: 0 });
             e.index.hideLoading();
-            
+
         } catch (err) {
             console.error(err);
             e.index.hideLoading();
@@ -4709,8 +4846,8 @@ Please rewrite the content based on the instruction. Maintain the structured for
     },
 
     handleOfficial() {
-         // Switch to official input
-         this.stage = "official_input";
+        // Switch to official input
+        this.stage = "official_input";
     },
 
     // Input Handlers
@@ -4722,7 +4859,7 @@ Please rewrite the content based on the instruction. Maintain the structured for
     off_onFeed(e) { this.officialData.feedback = e.detail.value; },
     off_onAch(e) { this.officialData.achievement = e.detail.value; },
     off_setPurpose(e) { this.officialData.purpose = e.currentTarget.dataset.val; },
-    
+
     async handleReportGenerate() {
         const d = this.reportData;
         if (!d.subject) {
@@ -4772,7 +4909,7 @@ Language: Simplified Chinese. Formal tone.`;
         }
     },
     handleReport() {
-         this.stage = "report_input";
+        this.stage = "report_input";
     },
     // Report Handlers
     rep_onSubject(e) { this.reportData.subject = e.detail.value; },
@@ -4785,27 +4922,27 @@ Language: Simplified Chinese. Formal tone.`;
     rep_onOutput(e) { this.reportData.data_output = e.detail.value; },
     rep_onOther(e) { this.reportData.data_other = e.detail.value; },
     handleSummary() {
-         // Switch to summary input
-         this.stage = "summary_input";
+        // Switch to summary input
+        this.stage = "summary_input";
     },
-        // Handlers for inputs
-        onAnaSubject(e) { this.analysisData.subject = e.detail.value; },
-        onAnaTextbook(e) { this.analysisData.textbookInfo = e.detail.value; },
-        onAnaContent(e) { this.analysisData.content = e.detail.value; },
-        onAnaStandard(e) { this.analysisData.standard = e.detail.value; },
-        onAnaStudent(e) { this.analysisData.studentInfo = e.detail.value; },
+    // Handlers for inputs
+    onAnaSubject(e) { this.analysisData.subject = e.detail.value; },
+    onAnaTextbook(e) { this.analysisData.textbookInfo = e.detail.value; },
+    onAnaContent(e) { this.analysisData.content = e.detail.value; },
+    onAnaStandard(e) { this.analysisData.standard = e.detail.value; },
+    onAnaStudent(e) { this.analysisData.studentInfo = e.detail.value; },
     // --- New Scenarios: Quiz, Club, Selection ---
-    
+
     async handleQuizGenerate() {
         const d = this.quizData;
         if (!d.subject || !d.topic) {
-             wx.showToast({ title: "请填写学科和知识点", icon: "none" });
-             return;
+            wx.showToast({ title: "请填写学科和知识点", icon: "none" });
+            return;
         }
 
         this.stage = "loading_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
         try {
-             const prompt = `R: Expert Assessment Creator.
+            const prompt = `R: Expert Assessment Creator.
 T: Create an "Efficient Questioning" set for Subject: ${d.subject}, Topic: ${d.topic}.
 Grade: ${d.grade || 'General'}. Count: ${d.count || 3}.
 Misconceptions to target: ${d.misconceptions || 'Common errors'}.
@@ -4818,28 +4955,28 @@ Requirements:
 - Explain *why* the wrong options are wrong (if MCQ).
 
 F: Markdown. Language: Simplified Chinese.`;
-             const content = await LLMService.callClaude(prompt);
-             this.resultData = { title: "高效出题结果", contentBlocks: this.parseMarkdownToBlocks(content) };
-             this.stage = "result_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
-             this.completeTask(20);
-             this.addToHistory("高效出题: " + d.topic, content);
-        } catch(e) { 
+            const content = await LLMService.callClaude(prompt);
+            this.resultData = { title: "高效出题结果", contentBlocks: this.parseMarkdownToBlocks(content) };
+            this.stage = "result_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
+            this.completeTask(20);
+            this.addToHistory("高效出题: " + d.topic, content);
+        } catch (e) {
             console.error(e);
-            this.stage = "quiz_input"; 
-            wx.showToast({ title: "生成失败", icon:"none" }); 
+            this.stage = "quiz_input";
+            wx.showToast({ title: "生成失败", icon: "none" });
         }
     },
 
     async handleClubGenerate() {
         const d = this.clubData;
         if (!d.name) {
-             wx.showToast({ title: "请输入社团名称", icon: "none" });
-             return;
+            wx.showToast({ title: "请输入社团名称", icon: "none" });
+            return;
         }
 
         this.stage = "loading_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
         try {
-             const prompt = `R: Expert School Club Advisor.
+            const prompt = `R: Expert School Club Advisor.
 T: Design a detailed Club Semester Plan for: ${d.name}.
 Type: ${d.type || 'Academic'}. Scale: ${d.scale || '30 students'}.
 Schedule: ${d.schedule || 'Weekly'}. Facilities: ${d.facilities || 'Classroom'}.
@@ -4854,54 +4991,54 @@ Requirements:
 
 F: Markdown. Language: Simplified Chinese.`;
 
-             const timeoutPromise = new Promise((_, reject) => 
+            const timeoutPromise = new Promise((_, reject) =>
                 setTimeout(() => reject(new Error("Timeout: LLM took too long")), 90000)
-             );
-             
-             const content = await Promise.race([
-                 LLMService.callClaude(prompt),
-                 timeoutPromise
-             ]);
-             
-             const blocks = this.parseMarkdownToBlocks(content);
-             
-             // Strategy 1: Vue Reactivity
-             this.resultData = { 
-                 title: "社团课程设计方案", 
-                 contentBlocks: blocks,
-                 fullContent: content
-             };
-             this.currResult = content;
+            );
 
-             // Strategy 3: Native MP setData
-             const nativePage = this.$scope || this;
-             if (nativePage && typeof nativePage.setData === 'function') {
-                 nativePage.setData({
-                     'resultData': this.resultData,
-                     currResult: content,
-                     res_debug: (content ? content.length : 0) + ' chars (Native)'
-                 });
-             }
+            const content = await Promise.race([
+                LLMService.callClaude(prompt),
+                timeoutPromise
+            ]);
 
-             this.stage = "result_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
-             this.completeTask(20);
-        } catch(e) { 
+            const blocks = this.parseMarkdownToBlocks(content);
+
+            // Strategy 1: Vue Reactivity
+            this.resultData = {
+                title: "社团课程设计方案",
+                contentBlocks: blocks,
+                fullContent: content
+            };
+            this.currResult = content;
+
+            // Strategy 3: Native MP setData
+            const nativePage = this.$scope || this;
+            if (nativePage && typeof nativePage.setData === 'function') {
+                nativePage.setData({
+                    'resultData': this.resultData,
+                    currResult: content,
+                    res_debug: (content ? content.length : 0) + ' chars (Native)'
+                });
+            }
+
+            this.stage = "result_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
+            this.completeTask(20);
+        } catch (e) {
             console.error(e);
-            this.stage = "club_input"; 
-            wx.showModal({ title: "生成失败", content: e.message || 'Unknown', showCancel: false }); 
+            this.stage = "club_input";
+            wx.showModal({ title: "生成失败", content: e.message || 'Unknown', showCancel: false });
         }
     },
 
     async handleSelectionGenerate() {
         const d = this.selectionData;
         if (!d.province) {
-             wx.showToast({ title: "请输入高考省份", icon: "none" });
-             return;
+            wx.showToast({ title: "请输入高考省份", icon: "none" });
+            return;
         }
 
         this.stage = "loading_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
         try {
-             const prompt = `R: Expert College Counselor (Student Selection Guide).
+            const prompt = `R: Expert College Counselor (Student Selection Guide).
 T: Provide Subject Selection Advice (3+1+2 or 3+3) for student.
 Province: ${d.province}. Student: ${d.studentName || 'Student'}.
 Grade: ${d.grade || 'High 1'}.
@@ -4918,53 +5055,53 @@ Task:
 
 F: Markdown. Language: Simplified Chinese.`;
 
-             const timeoutPromise = new Promise((_, reject) => 
+            const timeoutPromise = new Promise((_, reject) =>
                 setTimeout(() => reject(new Error("Timeout: LLM took too long")), 90000)
-             );
-             
-             const content = await Promise.race([
-                 LLMService.callClaude(prompt),
-                 timeoutPromise
-             ]);
-             
-             const blocks = this.parseMarkdownToBlocks(content);
-             
-             // Strategy 1: Vue Reactivity
-             this.resultData = { 
-                 title: "选科指导建议", 
-                 contentBlocks: blocks,
-                 fullContent: content
-             };
-             this.currResult = content;
+            );
 
-             // Strategy 3: Native MP setData
-             const nativePage = this.$scope || this;
-             if (nativePage && typeof nativePage.setData === 'function') {
-                 nativePage.setData({
-                     'resultData': this.resultData,
-                     currResult: content,
-                     res_debug: (content ? content.length : 0) + ' chars (Native)'
-                 });
-             }
+            const content = await Promise.race([
+                LLMService.callClaude(prompt),
+                timeoutPromise
+            ]);
 
-             this.stage = "result_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
-             this.completeTask(20);
-        } catch(e) { 
+            const blocks = this.parseMarkdownToBlocks(content);
+
+            // Strategy 1: Vue Reactivity
+            this.resultData = {
+                title: "选科指导建议",
+                contentBlocks: blocks,
+                fullContent: content
+            };
+            this.currResult = content;
+
+            // Strategy 3: Native MP setData
+            const nativePage = this.$scope || this;
+            if (nativePage && typeof nativePage.setData === 'function') {
+                nativePage.setData({
+                    'resultData': this.resultData,
+                    currResult: content,
+                    res_debug: (content ? content.length : 0) + ' chars (Native)'
+                });
+            }
+
+            this.stage = "result_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
+            this.completeTask(20);
+        } catch (e) {
             console.error(e);
-            this.stage = "selection_input"; 
-            wx.showModal({ title: "生成失败", content: e.message || '', showCancel: false }); 
+            this.stage = "selection_input";
+            wx.showModal({ title: "生成失败", content: e.message || '', showCancel: false });
         }
     },
 
     async handlePsychGenerate() {
         const d = this.psychData;
         if (!d.problemType) {
-             wx.showToast({ title: "请输入问题类型", icon: "none" });
-             return;
+            wx.showToast({ title: "请输入问题类型", icon: "none" });
+            return;
         }
         this.stage = "loading_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
         try {
-             const prompt = `R: School Psychologist.
+            const prompt = `R: School Psychologist.
 T: Provide counseling advice for student problem: ${d.problemType}.
 Student Info: ${d.studentInfo || 'Grade 1'}.
 Manifestation: ${d.manifestation || 'None'}.
@@ -4979,44 +5116,44 @@ Task:
 
 F: Markdown. Language: Simplified Chinese.`;
 
-             const timeoutPromise = new Promise((_, reject) => 
+            const timeoutPromise = new Promise((_, reject) =>
                 setTimeout(() => reject(new Error("Timeout: LLM took too long")), 90000)
-             );
-             
-             const content = await Promise.race([
-                 LLMService.callClaude(prompt),
-                 timeoutPromise
-             ]);
-             
-             this.resultData = { title: "心理疏导建议", contentBlocks: this.parseMarkdownToBlocks(content), fullContent: content };
-             this.currResult = content;
-             
-             const nativePage = this.$scope || this;
-             if (nativePage && typeof nativePage.setData === 'function') {
-                 nativePage.setData({
-                     'resultData': this.resultData,
-                     currResult: content
-                 });
-             }
-             
-             this.stage = "result_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
-             this.completeTask(20);
-        } catch(e) {
-             console.error(e);
-             this.stage = "psych_input";
-             wx.showModal({ title: "生成失败", content: e.message || '', showCancel: false });
+            );
+
+            const content = await Promise.race([
+                LLMService.callClaude(prompt),
+                timeoutPromise
+            ]);
+
+            this.resultData = { title: "心理疏导建议", contentBlocks: this.parseMarkdownToBlocks(content), fullContent: content };
+            this.currResult = content;
+
+            const nativePage = this.$scope || this;
+            if (nativePage && typeof nativePage.setData === 'function') {
+                nativePage.setData({
+                    'resultData': this.resultData,
+                    currResult: content
+                });
+            }
+
+            this.stage = "result_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
+            this.completeTask(20);
+        } catch (e) {
+            console.error(e);
+            this.stage = "psych_input";
+            wx.showModal({ title: "生成失败", content: e.message || '', showCancel: false });
         }
     },
 
     async handleConflictGenerate() {
         const d = this.conflictData;
         if (!d.type) {
-             wx.showToast({ title: "请输入矛盾类型", icon: "none" });
-             return;
+            wx.showToast({ title: "请输入矛盾类型", icon: "none" });
+            return;
         }
         this.stage = "loading_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
         try {
-             const prompt = `R: Expert Teacher (Conflict Resolution).
+            const prompt = `R: Expert Teacher (Conflict Resolution).
 T: Resolve student conflict: ${d.type}.
 Students: ${d.students}.
 Context: ${d.timePlace}, ${d.content}.
@@ -5032,39 +5169,39 @@ Task:
 
 F: Markdown. Language: Simplified Chinese.`;
 
-             const timeoutPromise = new Promise((_, reject) => 
+            const timeoutPromise = new Promise((_, reject) =>
                 setTimeout(() => reject(new Error("Timeout: LLM took too long")), 90000)
-             );
-             
-             const content = await Promise.race([
-                 LLMService.callClaude(prompt),
-                 timeoutPromise
-             ]);
-             
-             this.resultData = { title: "矛盾处理方案", contentBlocks: this.parseMarkdownToBlocks(content), fullContent: content };
-             this.currResult = content;
-             
-             const nativePage = this.$scope || this;
-             if (nativePage && typeof nativePage.setData === 'function') {
-                 nativePage.setData({
-                     'resultData': this.resultData,
-                     currResult: content
-                 });
-             }
-             
-             this.stage = "result_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
-             this.completeTask(20);
-        } catch(e) {
-             console.error(e);
-             this.stage = "conflict_input";
-             wx.showModal({ title: "生成失败", content: e.message || '', showCancel: false });
+            );
+
+            const content = await Promise.race([
+                LLMService.callClaude(prompt),
+                timeoutPromise
+            ]);
+
+            this.resultData = { title: "矛盾处理方案", contentBlocks: this.parseMarkdownToBlocks(content), fullContent: content };
+            this.currResult = content;
+
+            const nativePage = this.$scope || this;
+            if (nativePage && typeof nativePage.setData === 'function') {
+                nativePage.setData({
+                    'resultData': this.resultData,
+                    currResult: content
+                });
+            }
+
+            this.stage = "result_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
+            this.completeTask(20);
+        } catch (e) {
+            console.error(e);
+            this.stage = "conflict_input";
+            wx.showModal({ title: "生成失败", content: e.message || '', showCancel: false });
         }
     }
 };
 
 // Render Function Wrapper
 const a = e._export_sfc(t, [
-    ["render", function(t, a, i, s, r, c) {
+    ["render", function (t, a, i, s, r, c) {
         return e.e({
             a: "curriculum_input" === r.stage
         }, "curriculum_input" === r.stage ? e.e({
@@ -5490,6 +5627,27 @@ const a = e._export_sfc(t, [
             handlePLDesign: e.o(((...e) => c.handlePLDesign && c.handlePLDesign(...e))),
             handlePLLecture: e.o(((...e) => c.handlePLLecture && c.handlePLLecture(...e)))
         } : {}, {
+            res_content: r.res_content,
+            res_debug: r.currResult,
+            // --- ADDED FLAGS ---
+            LOADING_PAGE: "loading_page" === r.stage,
+            RESULT_PAGE: "result_page" === r.stage,
+
+            onContentChange: e.o(((...e) => c.onContentChange && c.onContentChange(...e))),
+            res_export: e.o(((...e) => c.res_export && c.res_export(...e))),
+            res_tweak: e.o(((...e) => c.res_tweak && c.res_tweak(...e))),
+            onRefineInput: e.o(((...e) => c.onRefineInput && c.onRefineInput(...e))),
+            res_rewrite: e.o(((...e) => c.res_rewrite && c.res_rewrite(...e)))
+        }, {
+            aw: c.isCameraStage ? 1 : ""
+        }, {
+            TS: "tool_select" === r.stage
+        }, "tool_select" === r.stage ? {
+            quickQuiz: e.o(((...e) => c.handleQuickQuiz && c.handleQuickQuiz(...e))),
+            paperAssess: e.o(((...e) => c.handlePaperAssess && c.handlePaperAssess(...e))),
+            handleAdaptation: e.o(((...e) => c.handleAdaptation && c.handleAdaptation(...e))),
+            handleMistakeTraining: e.o(((...e) => c.handleMistakeTraining && c.handleMistakeTraining(...e)))
+        } : {}, {
             RPW: "research_paper" === r.stage
         }, "research_paper" === r.stage ? {
             M: e.o(((...e) => c.handleWebRedirect && c.handleWebRedirect(...e))),
@@ -5497,13 +5655,6 @@ const a = e._export_sfc(t, [
             handleRPReview: e.o(((...e) => c.handleRPReview && c.handleRPReview(...e))),
             handleRPMethod: e.o(((...e) => c.handleRPMethod && c.handleRPMethod(...e))),
             handleRPData: e.o(((...e) => c.handleRPData && c.handleRPData(...e)))
-        } : {}, {
-            TS: "tool_select" === r.stage
-        }, "tool_select" === r.stage ? {
-            quickQuiz: e.o(((...e) => c.handleQuickQuiz && c.handleQuickQuiz(...e))),
-            paperAssess: e.o(((...e) => c.handlePaperAssess && c.handlePaperAssess(...e))),
-            handleAdaptation: e.o(((...e) => c.handleAdaptation && c.handleAdaptation(...e))),
-            handleMistakeTraining: e.o(((...e) => c.handleMistakeTraining && c.handleMistakeTraining(...e)))
         } : {}, {
         }, {
             T: "quick_input" === r.stage || "batch_voice_input" === r.stage
@@ -5660,7 +5811,7 @@ const a = e._export_sfc(t, [
                     }
                     r.clubData.focusTags.push(val);
                 }
-                r.clubData.focus = r.clubData.focusTags.join("、"); 
+                r.clubData.focus = r.clubData.focusTags.join("、");
             })),
             cl_generate: e.o(((...e) => c.handleClubGenerate && c.handleClubGenerate(...e)))
         } : {}, {
@@ -5956,7 +6107,7 @@ const a = e._export_sfc(t, [
             lp_onDuration: e.o(((e) => r.lessonPlanData.duration = e.detail.value)),
             lp_kp: r.lessonPlanData.designKeyPoints,
             lp_onKp: e.o(((e) => r.lessonPlanData.designKeyPoints = e.detail.value)),
-            
+
             lp_type: r.lessonPlanData.lessonType,
             lp_setType: e.o(((e) => c.handleLessonPlanType && c.handleLessonPlanType(e))),
             lp_format: r.lessonPlanData.format,
@@ -5967,9 +6118,9 @@ const a = e._export_sfc(t, [
             lp_setHw: e.o(((e) => c.handleLessonPlanHomework && c.handleLessonPlanHomework(e))),
             lp_style: r.lessonPlanData.style,
             lp_setStyle: e.o(((e) => c.handleLessonPlanStyle && c.handleLessonPlanStyle(e))),
-            
+
             lp_generate: e.o(((...e) => c.handleLessonPlanGenerate && c.handleLessonPlanGenerate(...e))),
-             // Reuse History Modal logic
+            // Reuse History Modal logic
             lp_viewHistory: e.o(((e) => c.handleViewAnalysisHistory && c.handleViewAnalysisHistory(e))),
             showAnalysisModal: r.showAnalysisModal,
             isHistoryMode: r.isHistoryMode,
@@ -6044,7 +6195,7 @@ const a = e._export_sfc(t, [
             res_blocks: r.resultData.contentBlocks,
             res_content: r.currResult, // Bind to simple string
             res_debug: (r.currResult || '').length + ' chars',
-            onContentChange: e.o(((e) => r.currResult = e.detail.value)), 
+            onContentChange: e.o(((e) => r.currResult = e.detail.value)),
             refineQuery: r.refineQuery,
             onRefineInput: e.o(((e) => r.refineQuery = e.detail.value)),
             res_back: e.o((() => c.handleResultBack && c.handleResultBack())),

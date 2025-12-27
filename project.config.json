@@ -3,8 +3,8 @@
   "packOptions": {
     "ignore": [
       {
-        "type": "file",
-        "value": "server*.js"
+        "value": "server*.js",
+        "type": "file"
       }
     ],
     "include": []

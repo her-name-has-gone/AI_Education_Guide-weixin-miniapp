@@ -2875,9 +2875,9 @@ IMPORTANT: Output Language: Simplified Chinese (简体中文). All content must 
                 content: '原因: ' + (err.message || '未知错误'),
                 showCancel: false
             });
-        }
             this.stage = "pbl_input";
         }
+    }
     },
     async handleLessonPlanGenerate() {
         this.stage = "loading_page"; wx.pageScrollTo({ scrollTop: 0, duration: 0 });
